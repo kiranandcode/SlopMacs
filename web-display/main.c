@@ -34,7 +34,7 @@ static volatile sig_atomic_t running = 1;
 static int active_input_fd = -1;   /* only forward input from this client fd */
 
 /* Line buffer for data from Emacs.  */
-#define EMACS_BUF_SIZE (256 * 1024)
+#define EMACS_BUF_SIZE (2 * 1024 * 1024)
 static uint8_t emacs_buf[EMACS_BUF_SIZE];
 static size_t emacs_buf_len = 0;
 

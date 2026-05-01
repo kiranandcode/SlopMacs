@@ -73,6 +73,53 @@ DISPLAY may be set to the name of a display that will be initialized."
                   (insert (substitute-command-keys initial-scratch-message))
                   (set-buffer-modified-p nil))))))
 
+;;;; Icon font loading for all-the-icons and similar packages.
+
+(defvar web--icon-font-dirs
+  '("~/.local/share/fonts/"
+    "~/.fonts/"
+    "/usr/share/fonts/truetype/")
+  "Directories to search for icon font files.")
+
+(defvar web--icon-font-names
+  '(("all-the-icons" . "all-the-icons.ttf")
+    ("file-icons" . "file-icons.ttf")
+    ("FontAwesome" . "FontAwesome.ttf")
+    ("github-octicons" . "octicons.ttf")
+    ("Material Icons" . "material-design-icons.ttf")
+    ("Weather Icons" . "weathericons-regular-webfont.ttf"))
+  "Alist of (FAMILY-NAME . FILENAME) for icon fonts to load.")
+
+(defun web--load-icon-fonts ()
+  "Load icon font files into the web display browser."
+  (when (fboundp 'web-load-font)
+    (dolist (entry web--icon-font-names)
+      (let ((name (car entry))
+            (file (cdr entry)))
+        ;; Search in all-the-icons package directories first.
+        (let ((found nil))
+          (dolist (dir (append
+                        ;; Common package manager font directories.
+                        (let ((dirs nil))
+                          (dolist (d '("~/.emacs.d/straight/repos/all-the-icons.el/fonts/"
+                                       "~/.emacs.d/elpa/all-the-icons-*/fonts/"
+                                       "~/.config/emacs/straight/repos/all-the-icons.el/fonts/"))
+                            (let ((expanded (file-expand-wildcards d)))
+                              (when expanded
+                                (setq dirs (append dirs expanded)))))
+                          dirs)
+                        web--icon-font-dirs))
+            (unless found
+              (let ((path (expand-file-name file dir)))
+                (when (file-exists-p path)
+                  (condition-case nil
+                      (progn
+                        (web-load-font name path)
+                        (setq found t))
+                    (error nil)))))))))))
+
+(add-hook 'after-init-hook #'web--load-icon-fonts)
+
 (provide 'web-win)
 
 ;;; web-win.el ends here

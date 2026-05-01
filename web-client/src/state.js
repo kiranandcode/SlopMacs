@@ -5,6 +5,7 @@ export class FrameState {
   constructor () {
     this.faces = new Map();
     this.windows = new Map();
+    this.images = new Map();
     this.defaultFg = '#d4d4d4';
     this.defaultBg = '#1e1e1e';
     this.cols = 80;
@@ -47,6 +48,35 @@ export class FrameState {
         this.activeMenu = msg;
         this._notify(false);
         break;
+      case 'load_font': {
+        const font = new FontFace(msg.name,
+          `url(data:font/ttf;base64,${msg.data})`);
+        font.load().then(f => {
+          document.fonts.add(f);
+          this._faceGen++;
+          this._notify(false);
+        }).catch(() => {});
+        break;
+      }
+      case 'image_data': {
+        const img = new Image();
+        this.images.set(msg.id, {
+          el: img,
+          w: msg.width,
+          h: msg.height,
+          loading: true,
+        });
+        img.onload = () => {
+          this.images.set(msg.id, { el: img, w: msg.width, h: msg.height });
+          this._notify(false);
+        };
+        img.onerror = () => {
+          this.images.delete(msg.id);
+          this._notify(false);
+        };
+        img.src = `data:${msg.mime};base64,${msg.data}`;
+        break;
+      }
       default:
         break;
     }
@@ -68,12 +98,21 @@ export class FrameState {
         const old = this.faces.get(fid);
         if (!old || old.fg !== face.fg || old.bg !== face.bg
             || old.bold !== face.bold || old.italic !== face.italic
-            || old.underline !== face.underline || old.strike !== face.strike) {
+            || old.underline !== face.underline || old.strike !== face.strike
+            || old.family !== face.family) {
           this.faces.set(fid, face);
           faceChanged = true;
         }
       }
-      if (faceChanged) this._faceGen++;
+      if (faceChanged) {
+        this._faceGen++;
+        /* Keep defaultBg/Fg in sync with the default face (id 0).  */
+        const face0 = this.faces.get(0);
+        if (face0) {
+          if (face0.bg) this.defaultBg = face0.bg;
+          if (face0.fg) this.defaultFg = face0.fg;
+        }
+      }
     }
 
     if (msg.windows) {
@@ -89,8 +128,15 @@ export class FrameState {
         if (wdata.lines) {
           for (const lineData of wdata.lines) {
             let row = lineData.row;
-            if (lineData.mode_line && row >= (wdata.h || (old && old.h) || 50))
-              row = (wdata.h || (old && old.h) || 50) - 1;
+            if (lineData.mode_line) {
+              /* Mode line always goes at the last row.  Remove any
+                 stale mode_line entries at other positions first.  */
+              const h = wdata.h || (old && old.h) || 50;
+              row = h - 1;
+              for (const [r, ld] of lines) {
+                if (ld.mode_line && r !== row) lines.delete(r);
+              }
+            }
             if (row >= 0) {
               lines.set(row, { ...lineData, row, gen });
             }
@@ -149,17 +195,39 @@ export class FrameState {
     const delta = msg.delta_rows;
     if (delta === 0) return;
 
-    const lines = new Map();
-    for (const [row, line] of old.lines) {
-      const newRow = row + delta;
+    const lines = new Map(old.lines);
+    const sourceStart = Number.isInteger(msg.current_row) ? msg.current_row : 0;
+    const count = Number.isInteger(msg.nrows) ? msg.nrows : old.h;
+    const moved = [];
+
+    for (let i = 0; i < count; i++) {
+      const row = sourceStart + i;
+      const line = old.lines.get(row);
+      if (!line || line.mode_line) continue;
+      moved.push([row + delta, line]);
+    }
+
+    for (let i = 0; i < count; i++) {
+      const row = sourceStart + i;
+      const line = old.lines.get(row);
+      if (line && !line.mode_line) lines.delete(row);
+    }
+
+    for (const [newRow, line] of moved) {
       if (newRow >= 0 && newRow < old.h) {
         lines.set(newRow, { ...line, row: newRow, gen });
       }
     }
 
-    const cursor = old.cursor
-      ? { ...old.cursor, row: old.cursor.row + delta }
-      : null;
+    let cursor = old.cursor;
+    if (cursor
+        && cursor.row >= sourceStart
+        && cursor.row < sourceStart + count) {
+      const nextRow = cursor.row + delta;
+      cursor = nextRow >= 0 && nextRow < old.h
+        ? { ...cursor, row: nextRow }
+        : null;
+    }
 
     this.pendingScrolls.push({ windowId: msg.window_id });
 

@@ -249,13 +249,19 @@ web_frame_output_write (struct web_frame_output *output,
 
   pthread_mutex_lock (&output->mutex);
 
-  struct web_frame_buffer *buffer = &output->buffers[output->write_idx];
-  if (web_buffer_reserve (&buffer->data, &buffer->capacity, len))
+  struct web_frame_buffer *buffer = output->frame_ready
+    ? &output->buffers[output->ready_idx]
+    : &output->buffers[output->write_idx];
+  int old_len = output->frame_ready ? buffer->len : 0;
+  if (web_buffer_reserve (&buffer->data, &buffer->capacity, old_len + len))
     {
-      memcpy (buffer->data, data, len);
-      buffer->len = len;
-      output->ready_idx = output->write_idx;
-      output->write_idx = 1 - output->write_idx;
+      memcpy (buffer->data + old_len, data, len);
+      buffer->len = old_len + len;
+      if (!output->frame_ready)
+	{
+	  output->ready_idx = output->write_idx;
+	  output->write_idx = 1 - output->write_idx;
+	}
       output->frame_ready = true;
       pthread_cond_signal (&output->ready_cond);
     }

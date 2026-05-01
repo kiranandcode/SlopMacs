@@ -19,6 +19,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <config.h>
 
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+
 #include "lisp.h"
 #include "frame.h"
 #include "window.h"
@@ -27,6 +31,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "webgui.h"
 #include "dispextern.h"
 #include "font.h"
+#include "coding.h"
 
 
 /* Stub frame parameter handlers.  For most params we use generic
@@ -710,9 +715,157 @@ get_keysym_name (int keysym)
 }
 
 
+DEFUN ("xw-color-defined-p", Fxw_color_defined_p, Sxw_color_defined_p, 1, 2, 0,
+       doc: /* SKIP: real doc in xfns.c.  */)
+  (Lisp_Object color, Lisp_Object frame)
+{
+  Emacs_Color col;
+  struct frame *f = decode_window_system_frame (frame);
+
+  CHECK_STRING (color);
+  if (FRAME_TERMINAL (f)->defined_color_hook (f, SSDATA (color),
+					      &col, false, false))
+    return Qt;
+  return Qnil;
+}
+
+DEFUN ("xw-color-values", Fxw_color_values, Sxw_color_values, 1, 2, 0,
+       doc: /* SKIP: real doc in xfns.c.  */)
+  (Lisp_Object color, Lisp_Object frame)
+{
+  Emacs_Color col;
+  struct frame *f = decode_window_system_frame (frame);
+
+  CHECK_STRING (color);
+  if (FRAME_TERMINAL (f)->defined_color_hook (f, SSDATA (color),
+					      &col, false, false))
+    return list3i (col.red, col.green, col.blue);
+  return Qnil;
+}
+
+
+/* Base64 encoding table.  */
+static const char b64_table[] =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/* Encode binary data to base64.  Returns malloc'd string; caller frees.  */
+static char *
+base64_encode_alloc (const unsigned char *data, size_t len, size_t *out_len)
+{
+  size_t olen = 4 * ((len + 2) / 3);
+  char *out = xmalloc (olen + 1);
+  char *p = out;
+  size_t i;
+
+  for (i = 0; i + 2 < len; i += 3)
+    {
+      *p++ = b64_table[(data[i] >> 2) & 0x3F];
+      *p++ = b64_table[((data[i] & 0x3) << 4) | (data[i+1] >> 4)];
+      *p++ = b64_table[((data[i+1] & 0xF) << 2) | (data[i+2] >> 6)];
+      *p++ = b64_table[data[i+2] & 0x3F];
+    }
+  if (i < len)
+    {
+      *p++ = b64_table[(data[i] >> 2) & 0x3F];
+      if (i + 1 < len)
+	{
+	  *p++ = b64_table[((data[i] & 0x3) << 4) | (data[i+1] >> 4)];
+	  *p++ = b64_table[(data[i+1] & 0xF) << 2];
+	}
+      else
+	{
+	  *p++ = b64_table[(data[i] & 0x3) << 4];
+	  *p++ = '=';
+	}
+      *p++ = '=';
+    }
+  *p = '\0';
+  *out_len = p - out;
+  return out;
+}
+
+DEFUN ("web-load-font", Fweb_load_font, Sweb_load_font, 2, 2, 0,
+       doc: /* Load a font file into the web display browser.
+NAME is the font family name to register (a string).
+FILE is the path to a .ttf or .otf font file.
+The font is base64-encoded and sent to the browser via the FontFace API.  */)
+  (Lisp_Object name, Lisp_Object file)
+{
+  CHECK_STRING (name);
+  CHECK_STRING (file);
+
+  struct web_display_info *dpyinfo = x_display_list;
+  if (!dpyinfo)
+    error ("Web display not initialized");
+
+  /* Expand and validate file path.  */
+  file = Fexpand_file_name (file, Qnil);
+  const char *path = SSDATA (file);
+
+  /* Read the font file.  */
+  int fd = emacs_open (path, O_RDONLY, 0);
+  if (fd < 0)
+    error ("Cannot open font file: %s", path);
+
+  struct stat st;
+  if (fstat (fd, &st) < 0 || st.st_size == 0)
+    {
+      emacs_close (fd);
+      error ("Cannot stat font file: %s", path);
+    }
+
+  size_t file_size = st.st_size;
+  unsigned char *buf = xmalloc (file_size);
+  size_t total = 0;
+  while (total < file_size)
+    {
+      ssize_t n = read (fd, buf + total, file_size - total);
+      if (n <= 0)
+	{
+	  xfree (buf);
+	  emacs_close (fd);
+	  error ("Error reading font file: %s", path);
+	}
+      total += n;
+    }
+  emacs_close (fd);
+
+  /* Base64-encode.  */
+  size_t b64_len;
+  char *b64 = base64_encode_alloc (buf, file_size, &b64_len);
+  xfree (buf);
+
+  /* Write the load_font JSON message.  */
+  const char *font_name = SSDATA (name);
+  WR_LIT (dpyinfo, "{\"type\":\"load_font\",\"name\":");
+  web_write_json_string (dpyinfo, font_name, (int) SBYTES (name));
+  WR_LIT (dpyinfo, ",\"data\":\"");
+  web_write_str (dpyinfo, b64, b64_len);
+  WR_LIT (dpyinfo, "\"}\n");
+  xfree (b64);
+
+  /* Flush immediately.  */
+#ifdef HAVE_PTHREAD
+  if (dpyinfo->async_enabled)
+    {
+      web_async_enqueue_output (&dpyinfo->async,
+				dpyinfo->write_buf, dpyinfo->write_buf_len);
+      dpyinfo->write_buf_len = 0;
+      web_frame_output_wake (&dpyinfo->async);
+    }
+  else
+#endif
+    web_write_flush (dpyinfo);
+
+  return Qnil;
+}
+
 void
 syms_of_webfns (void)
 {
+  defsubr (&Sweb_load_font);
+  defsubr (&Sxw_color_defined_p);
+  defsubr (&Sxw_color_values);
   defsubr (&Sx_hide_tip);
   defsubr (&Sx_show_tip);
   defsubr (&Sx_create_frame);

@@ -41,10 +41,17 @@ function menuItemsFromWindow (win) {
   return items;
 }
 
+function quoteFontFamily (family) {
+  return "'" + String(family).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
+}
+
 function fontForFace (face, dpr) {
   const style = face.italic ? 'italic ' : '';
   const weight = face.bold ? '700 ' : '400 ';
-  return style + weight + Math.round(FONT_SIZE * dpr) + 'px ' + FONT_FAMILY;
+  const family = face.family
+    ? quoteFontFamily(face.family) + ',' + FONT_FAMILY
+    : FONT_FAMILY;
+  return style + weight + Math.round(FONT_SIZE * dpr) + 'px ' + family;
 }
 
 function cursorClass (cursor) {
@@ -83,7 +90,8 @@ class GlyphAtlas {
 
   get (ch, face) {
     const key = ch + '\0' + face.fg + '\0'
-      + (face.bold ? 1 : 0) + '\0' + (face.italic ? 1 : 0);
+      + (face.bold ? 1 : 0) + '\0' + (face.italic ? 1 : 0)
+      + '\0' + (face.family || '');
     const cached = this.cache.get(key);
     if (cached) return cached;
 
@@ -336,13 +344,14 @@ export class FrameRenderer {
       const lineGen = lineData ? lineData.gen : -1;
       const prevGen = lineGens.get(row);
 
-      /* Skip lines that haven't changed since last render.  */
-      if (!full && lineGen === prevGen && lineGen !== -1)
-        continue;
+      /* Skip unchanged lines.  */
+      if (!full && lineGen === prevGen && lineGen !== -1) continue;
 
       this.drawLine(win, row, state);
       lineGens.set(row, lineGen);
     }
+
+    this.drawImages(win, state);
 
     ctx.fillStyle = 'rgba(255,255,255,0.06)';
     ctx.fillRect(x + w - 1, y, 1, h);
@@ -378,6 +387,16 @@ export class FrameRenderer {
       ctx.fillStyle = face.bg || state.defaultBg;
       ctx.fillRect(rx, y, Math.ceil(rw), height);
 
+      if (run.img_id > 0) {
+        const imgData = state.images.get(run.img_id);
+        if (!imgData || !imgData.el.complete || imgData.loading) {
+          ctx.fillStyle = 'rgba(128,128,128,0.3)';
+          ctx.fillRect(rx, y, Math.ceil(rw), height);
+        }
+        col += len;
+        continue;
+      }
+
       for (let i = 0; i < len; i++) {
         const ch = chars[i];
         if (ch !== ' ') {
@@ -401,8 +420,8 @@ export class FrameRenderer {
         ctx.fillStyle = face.fg;
         ctx.fillRect(rx, y + Math.floor(height / 2), Math.ceil(rw), 1);
       }
-      if (face.box) {
-        ctx.strokeStyle = face.fg;
+      if (face.box && face.box !== 'raised' && face.box !== 'lowered') {
+        ctx.strokeStyle = typeof face.box === 'string' ? face.box : face.fg;
         ctx.strokeRect(rx + 0.5, y + 0.5, Math.max(0, rw - 1), height - 1);
       }
 
@@ -410,10 +429,40 @@ export class FrameRenderer {
     }
 
     if (lineData.mode_line) {
-      ctx.fillStyle = 'rgba(255,255,255,0.20)';
-      ctx.fillRect(x, y, width, 1);
-      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
       ctx.fillRect(x, y + height - 1, width, 1);
+    }
+  }
+
+  drawImages (win, state) {
+    const m = this.metrics;
+    const ctx = this.ctx;
+    const x = Math.round(win.x * m.charW);
+
+    for (const [row, lineData] of win.lines) {
+      if (row < 0 || row >= win.h || !lineData || !lineData.runs) continue;
+      const y = Math.round((win.y + row) * m.charH);
+      let col = 0;
+
+      for (const run of lineData.runs) {
+        const text = run.text || '';
+        const len = charsOf(text).length;
+
+        if (run.img_id > 0) {
+          const imgData = state.images.get(run.img_id);
+          if (imgData && imgData.el.complete && !imgData.loading) {
+            ctx.drawImage(
+              imgData.el,
+              x + col * m.charW,
+              y,
+              run.img_w || imgData.w,
+              run.img_h || imgData.h
+            );
+          }
+        }
+
+        col += len;
+      }
     }
   }
 

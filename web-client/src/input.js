@@ -7,16 +7,21 @@ import { measureFont } from './measure.js';
 // Modifier bit flags (match Emacs conventions)
 const MOD_SHIFT = 1 << 0;
 const MOD_CTRL  = 1 << 2;
-const MOD_META  = 1 << 3;  // Alt on PC
-const MOD_SUPER = 1 << 4;  // Cmd on Mac
+const MOD_META  = 1 << 3;  // Alt/Option, and Command on macOS
 
 function getModifiers (e) {
   let m = 0;
   if (e.shiftKey) m |= MOD_SHIFT;
   if (e.ctrlKey)  m |= MOD_CTRL;
   if (e.altKey)   m |= MOD_META;
-  if (e.metaKey)  m |= MOD_SUPER;
+  if (e.metaKey)  m |= MOD_META;
   return m;
+}
+
+function swallow (e) {
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.stopImmediatePropagation) e.stopImmediatePropagation();
 }
 
 // Map browser key names to keycodes Emacs understands.
@@ -38,6 +43,9 @@ const SPECIAL_KEYS = {
   'F1':  0xFFBE, 'F2':  0xFFBF, 'F3':  0xFFC0, 'F4':  0xFFC1,
   'F5':  0xFFC2, 'F6':  0xFFC3, 'F7':  0xFFC4, 'F8':  0xFFC5,
   'F9':  0xFFC6, 'F10': 0xFFC7, 'F11': 0xFFC8, 'F12': 0xFFC9,
+  'F13': 0xFFCA, 'F14': 0xFFCB, 'F15': 0xFFCC, 'F16': 0xFFCD,
+  'F17': 0xFFCE, 'F18': 0xFFCF, 'F19': 0xFFD0, 'F20': 0xFFD1,
+  'F21': 0xFFD2, 'F22': 0xFFD3, 'F23': 0xFFD4, 'F24': 0xFFD5,
 };
 
 export class InputHandler {
@@ -68,8 +76,13 @@ export class InputHandler {
     /* Use window + capture phase so we are the FIRST handler for every
        physical keystroke, before Preact or any other delegation.  */
     this._on(window, 'keydown', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
+      swallow(e);
+
+      if (window._state?.activeMenu && e.key === 'Escape') {
+        this._send({ type: 'menu_cancel' });
+        window._state.dismissMenu();
+        return;
+      }
 
       const mods = getModifiers(e);
       let keycode = 0;
@@ -91,23 +104,30 @@ export class InputHandler {
       }
 
       this._send({ type: 'key', keycode, mods, 'char': charCode });
-    }, { capture: true });
+    }, { capture: true, passive: false });
 
-    this._on(window, 'keypress', (e) => e.preventDefault(), { capture: true });
+    const prevent = (e) => swallow(e);
+    this._on(window, 'keyup', prevent, { capture: true, passive: false });
+    this._on(window, 'keypress', prevent, { capture: true, passive: false });
+    this._on(window, 'beforeinput', prevent, { capture: true, passive: false });
+    this._on(window, 'contextmenu', prevent, { capture: true, passive: false });
+    this._on(window, 'auxclick', prevent, { capture: true, passive: false });
+    this._on(window, 'dragstart', prevent, { capture: true, passive: false });
+    this._on(window, 'selectstart', prevent, { capture: true, passive: false });
 
     this._on(document, 'paste', (e) => {
-      e.preventDefault();
+      swallow(e);
       const text = e.clipboardData?.getData('text');
       if (text) {
         this._send({ type: 'clipboard', dir: 'paste', text });
       }
-    });
+    }, { capture: true, passive: false });
 
     /* Ensure the frame element has focus so the page receives keys.  */
     if (this.el) this.el.focus();
 
     /* Any click anywhere on the page should re-focus the frame element.  */
-    this._on(document, 'click', () => {
+    this._on(document, 'pointerdown', () => {
       if (this.el) this.el.focus();
     }, { capture: true });
   }
@@ -175,9 +195,12 @@ export class InputHandler {
   }
 
   _setupScroll () {
-    this._on(this.el, 'wheel', (e) => {
-      e.preventDefault();
+    this._on(window, 'wheel', (e) => {
+      swallow(e);
       const rect = this.el.getBoundingClientRect();
+      const inside = e.clientX >= rect.left && e.clientX < rect.right
+        && e.clientY >= rect.top && e.clientY < rect.bottom;
+      if (!inside) return;
       let dx = Math.round(e.deltaX);
       let dy = Math.round(e.deltaY);
       dx = Math.max(-32768, Math.min(32767, dx));

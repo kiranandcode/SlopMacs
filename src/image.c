@@ -210,8 +210,8 @@ typedef struct web_bitmap_record Bitmap_Record;
 
 #define NO_PIXMAP 0
 
-#define GET_PIXEL(ximg, x, y) 0
-#define PUT_PIXEL(ximg, x, y, pixel) ((void) 0)
+#define GET_PIXEL(ximg, x, y) ((ximg)->data[(y) * (ximg)->width + (x)])
+#define PUT_PIXEL(ximg, x, y, pixel) ((ximg)->data[(y) * (ximg)->width + (x)] = (pixel))
 
 #define PIX_MASK_RETAIN	0
 #define PIX_MASK_DRAW	1
@@ -4219,6 +4219,22 @@ image_create_x_image_and_pixmap_1 (struct frame *f, int width, int height, int d
   *pimg = *pixmap;
   return 1;
 #endif
+
+#ifdef HAVE_WEB
+  if (depth == 0)
+    depth = 24;
+
+  struct web_pix_container *container = xmalloc (sizeof *container);
+  container->width = width;
+  container->height = height;
+  container->depth = depth;
+  container->data = xmalloc ((size_t) width * height * sizeof (unsigned long));
+  memset (container->data, 0, (size_t) width * height * sizeof (unsigned long));
+
+  *pixmap = container;
+  *pimg = container;
+  return 1;
+#endif
 }
 
 
@@ -4233,11 +4249,12 @@ image_destroy_x_image (Emacs_Pix_Container pimg)
   eassert (input_blocked_p ());
   if (pimg)
     {
-#if defined USE_CAIRO || defined HAVE_HAIKU || defined HAVE_NS
+#if defined USE_CAIRO || defined HAVE_HAIKU || defined HAVE_NS \
+      || defined HAVE_WEB
       /* On these systems, Emacs_Pix_Containers always point to the same
 	 data as pixmaps in `struct image', and therefore must never be
 	 freed separately.  */
-#endif	/* USE_CAIRO || HAVE_HAIKU || HAVE_NS */
+#endif	/* USE_CAIRO || HAVE_HAIKU || HAVE_NS || HAVE_WEB */
 #ifdef HAVE_NTGUI
       /* Data will be freed by DestroyObject.  */
       pimg->data = NULL;
@@ -4256,7 +4273,8 @@ static void
 gui_put_x_image (struct frame *f, Emacs_Pix_Container pimg,
                  Emacs_Pixmap pixmap, int width, int height)
 {
-#if defined USE_CAIRO || defined HAVE_HAIKU || defined HAVE_NS
+#if defined USE_CAIRO || defined HAVE_HAIKU || defined HAVE_NS \
+  || defined HAVE_WEB
   eassert (pimg == pixmap);
 #elif defined HAVE_X_WINDOWS
   GC gc;
@@ -4372,7 +4390,7 @@ image_unget_x_image_or_dc (struct image *img, bool mask_p,
 static Emacs_Pix_Container
 image_get_x_image (struct frame *f, struct image *img, bool mask_p)
 {
-#if defined USE_CAIRO || defined (HAVE_HAIKU)
+#if defined USE_CAIRO || defined (HAVE_HAIKU) || defined (HAVE_WEB)
   return !mask_p ? img->pixmap : img->mask;
 #elif defined HAVE_X_WINDOWS || defined HAVE_ANDROID
   XImage *ximg_in_img = !mask_p ? img->ximg : img->mask_img;
@@ -4404,7 +4422,7 @@ image_get_x_image (struct frame *f, struct image *img, bool mask_p)
 static void
 image_unget_x_image (struct image *img, bool mask_p, Emacs_Pix_Container ximg)
 {
-#ifdef USE_CAIRO
+#if defined USE_CAIRO || defined HAVE_WEB
 #elif defined HAVE_X_WINDOWS || defined HAVE_ANDROID
   XImage *ximg_in_img = !mask_p ? img->ximg : img->mask_img;
 
@@ -6908,7 +6926,7 @@ lookup_rgb_color (struct frame *f, int r, int g, int b)
 #ifdef HAVE_NTGUI
   return PALETTERGB (r >> 8, g >> 8, b >> 8);
 #elif defined USE_CAIRO || defined HAVE_NS || defined HAVE_HAIKU	\
-  || defined HAVE_ANDROID
+  || defined HAVE_ANDROID || defined HAVE_WEB
   return RGB_TO_ULONG (r >> 8, g >> 8, b >> 8);
 #else
   xsignal1 (Qfile_error,

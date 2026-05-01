@@ -35,7 +35,15 @@ struct web_rect
   int width, height;
 };
 
-typedef void *Emacs_Pixmap;
+struct web_pix_container
+{
+  int width;
+  int height;
+  int depth;
+  unsigned long *data;  /* pixel buffer: data[y * width + x] = 0xRRGGBB */
+};
+
+typedef struct web_pix_container *Emacs_Pixmap;
 typedef int Emacs_Window;
 typedef void *Emacs_Cursor;
 typedef int Drawable;

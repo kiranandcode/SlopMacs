@@ -20,6 +20,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <config.h>
 
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <signal.h>
 #include <unistd.h>
@@ -42,6 +43,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "process.h"
 #include "menu.h"
 #include "atimer.h"
+
+#ifdef HAVE_PNG
+#include <png.h>
+#endif
 
 /* The single display info for this web terminal.  */
 struct web_display_info *web_display_info;
@@ -77,7 +82,7 @@ web_write_ensure (struct web_display_info *dpyinfo, int need)
 }
 
 /* Append a string to the write buffer.  */
-static void
+void
 web_write_str (struct web_display_info *dpyinfo, const char *s, int len)
 {
   web_write_ensure (dpyinfo, len);
@@ -85,25 +90,41 @@ web_write_str (struct web_display_info *dpyinfo, const char *s, int len)
   dpyinfo->write_buf_len += len;
 }
 
-/* Write a string literal — sizeof computes length at compile time,
-   eliminating manual byte-counting bugs.  */
-#define WR_LIT(dp, s) web_write_str (dp, s, sizeof (s) - 1)
+/* WR_LIT is defined in webterm.h.  */
 
 /* Append a printf-formatted string to the write buffer.  */
 static void
 web_write_printf (struct web_display_info *dpyinfo, const char *fmt, ...)
 {
   char buf[4096];
-  va_list ap;
+  va_list ap, ap_copy;
   va_start (ap, fmt);
+  va_copy (ap_copy, ap);
   int n = vsnprintf (buf, sizeof buf, fmt, ap);
   va_end (ap);
-  if (n > 0)
-    web_write_str (dpyinfo, buf, n);
+
+  if (n <= 0)
+    {
+      va_end (ap_copy);
+      return;
+    }
+
+  if (n < (int) sizeof buf)
+    {
+      va_end (ap_copy);
+      web_write_str (dpyinfo, buf, n);
+      return;
+    }
+
+  char *large = xmalloc ((size_t) n + 1);
+  vsnprintf (large, (size_t) n + 1, fmt, ap_copy);
+  va_end (ap_copy);
+  web_write_str (dpyinfo, large, n);
+  xfree (large);
 }
 
 /* Flush the write buffer to the proxy fd.  */
-static void
+void
 web_write_flush (struct web_display_info *dpyinfo)
 {
   if (dpyinfo->proxy_fd < 0 || dpyinfo->write_buf_len == 0)
@@ -160,7 +181,7 @@ web_control_flush (struct web_display_info *dpyinfo)
 
 /* Append JSON-escaped text to the write buffer.  Handles ", \, and
    control characters.  */
-static void
+void
 web_write_json_string (struct web_display_info *dpyinfo,
 		       const char *s, int len)
 {
@@ -219,7 +240,7 @@ json_register_face (struct json_frame_state *js, int face_id)
   for (int i = 0; i < js->nface_ids; i++)
     if (js->face_ids[i] == face_id)
       return;
-  if (js->nface_ids < 512)
+  if (js->nface_ids < WEB_MAX_FACES)
     js->face_ids[js->nface_ids++] = face_id;
 }
 
@@ -231,8 +252,8 @@ json_get_window (struct json_frame_state *js, EMACS_INT id)
     if (js->windows[i].id == id)
       return &js->windows[i];
 
-  if (js->nwindows >= 8)
-    return &js->windows[0]; /* fallback */
+  if (js->nwindows >= WEB_MAX_WINDOWS)
+    return NULL;
 
   struct json_window *jw = &js->windows[js->nwindows++];
   memset (jw, 0, sizeof *jw);
@@ -249,8 +270,8 @@ json_get_line (struct json_window *jw, int row_index)
     if (jw->lines[i].row_index == row_index)
       return &jw->lines[i];
 
-  if (jw->nlines >= 80)
-    return &jw->lines[0]; /* fallback */
+  if (jw->nlines >= WEB_MAX_LINES)
+    return NULL;
 
   struct json_line *jl = &jw->lines[jw->nlines++];
   memset (jl, 0, sizeof *jl);
@@ -263,30 +284,62 @@ web_glyph_row_index (struct window *w, struct glyph_row *row,
 		     int frame_y_fallback)
 {
   struct frame *f = XFRAME (w->frame);
-  int ch = FRAME_LINE_HEIGHT (f);
-  int y;
+  int max_row = WINDOW_TOTAL_LINES (w);
+  if (max_row <= 0)
+    return 0;
 
+  /* Mode line rows always go at the last row position.  */
+  if (row && row->mode_line_p)
+    return max_row - 1;
+
+  /* Use the matrix vpos (sequential row index) when the row pointer
+     belongs to the window's glyph matrix.  This is correct even when
+     rows have varying pixel heights (e.g. images, variable-pitch
+     fonts).  The old pixel-division approach (y / ch) produced gaps
+     when rows were taller than the default character height.  */
+  if (row)
+    {
+      struct glyph_matrix *matrix = w->current_matrix;
+      if (matrix && matrix->rows
+	  && row >= matrix->rows
+	  && row < matrix->rows + matrix->nrows)
+	{
+	  int vpos = MATRIX_ROW_VPOS (row, matrix);
+	  if (vpos >= max_row)
+	    vpos = max_row - 1;
+	  return vpos;
+	}
+      /* Try desired_matrix too (during redisplay updates).  */
+      matrix = w->desired_matrix;
+      if (matrix && matrix->rows
+	  && row >= matrix->rows
+	  && row < matrix->rows + matrix->nrows)
+	{
+	  int vpos = MATRIX_ROW_VPOS (row, matrix);
+	  if (vpos >= max_row)
+	    vpos = max_row - 1;
+	  return vpos;
+	}
+    }
+
+  /* Fallback: pixel division for rows not in either matrix.  */
+  int ch = FRAME_LINE_HEIGHT (f);
   if (ch <= 0)
     {
       struct web_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
       ch = dpyinfo->default_char_height;
     }
-
-  if (row)
-    y = row->y;
-  else
-    y = frame_y_fallback - WINDOW_TO_FRAME_PIXEL_Y (w, 0);
-
   if (ch <= 0)
     return 0;
-  if (WINDOW_TOTAL_LINES (w) <= 0)
-    return 0;
+
+  int y = row ? row->y
+    : frame_y_fallback - WINDOW_TO_FRAME_PIXEL_Y (w, 0);
 
   int row_index = y / ch;
   if (row_index < 0)
     row_index = 0;
-  if (row_index >= WINDOW_TOTAL_LINES (w))
-    row_index = WINDOW_TOTAL_LINES (w) - 1;
+  if (row_index >= max_row)
+    row_index = max_row - 1;
 
   return row_index;
 }
@@ -365,6 +418,13 @@ web_update_window_begin (struct window *w)
 
   /* Find or allocate a json_window slot.  */
   struct json_window *jw = json_get_window (js, w->sequence_number);
+  if (!jw)
+    {
+      js->current_window = NULL;
+      js->current_line = NULL;
+      js->current_line_row = -1;
+      return;
+    }
   jw->x = WINDOW_LEFT_EDGE_COL (w);
   jw->y = WINDOW_TOP_EDGE_LINE (w);
   jw->w = WINDOW_TOTAL_COLS (w);
@@ -411,6 +471,8 @@ web_build_row_content (struct window *w, struct glyph_row *row)
   if (!jw || jw->id != w->sequence_number)
     {
       jw = json_get_window (js, w->sequence_number);
+      if (!jw)
+	return;
       jw->x = WINDOW_LEFT_EDGE_COL (w);
       jw->y = WINDOW_TOP_EDGE_LINE (w);
       jw->w = WINDOW_TOTAL_COLS (w);
@@ -422,6 +484,8 @@ web_build_row_content (struct window *w, struct glyph_row *row)
                                        WINDOW_TO_FRAME_PIXEL_Y (w, row->y));
 
   struct json_line *jl = json_get_line (jw, row_index);
+  if (!jl)
+    return;
 
   /* Skip if this row was already built in this redisplay cycle.  */
   if (jl->complete)
@@ -430,90 +494,123 @@ web_build_row_content (struct window *w, struct glyph_row *row)
   /* Read the COMPLETE row from the glyph matrix.  */
   jl->nruns = 0;
 
-  struct glyph *glyph = row->glyphs[TEXT_AREA];
-  struct glyph *end = glyph + row->used[TEXT_AREA];
-
   int current_face = -1;
   struct json_run *run = NULL;
 
-  for (; glyph < end; glyph++)
+  /* Iterate all three glyph areas: LEFT_MARGIN (0), TEXT (1),
+     RIGHT_MARGIN (2).  This ensures margin glyphs (used by
+     dashboard for padding/indentation) are included with their
+     correct face, eliminating gray holes.  */
+  for (int area = LEFT_MARGIN_AREA; area <= RIGHT_MARGIN_AREA; area++)
     {
-      int face_id = glyph->face_id;
+      struct glyph *glyph = row->glyphs[area];
+      struct glyph *end = glyph + row->used[area];
 
-      switch (glyph->type)
+      for (; glyph < end; glyph++)
 	{
-	case CHAR_GLYPH:
-	case COMPOSITE_GLYPH:
-	case GLYPHLESS_GLYPH:
-	  {
-	    unsigned int c = glyph->u.ch;
-	    if (c == 0)
-	      c = ' ';
+	  int face_id = glyph->face_id;
 
-	    if (face_id != current_face || !run)
+	  switch (glyph->type)
+	    {
+	    case CHAR_GLYPH:
+	    case COMPOSITE_GLYPH:
+	    case GLYPHLESS_GLYPH:
 	      {
-		if (jl->nruns >= 32)
+		unsigned int c = glyph->u.ch;
+		if (c == 0)
+		  c = ' ';
+
+		if (face_id != current_face || !run)
+		  {
+		    if (jl->nruns >= WEB_MAX_RUNS)
+		      goto done;
+		    run = &jl->runs[jl->nruns++];
+		    run->face_id = face_id;
+		    run->text_len = 0;
+		    run->img_id = 0;
+		    run->img_w = 0;
+		    run->img_h = 0;
+		    current_face = face_id;
+		    json_register_face (js, face_id);
+		  }
+
+		if (run->text_len <= WEB_RUN_TEXT_CAP - 4)
+		  {
+		    int n = encode_utf8 (c,
+					 (unsigned char *) run->text
+					 + run->text_len);
+		    run->text_len += n;
+		  }
+		break;
+	      }
+
+	    case STRETCH_GLYPH:
+	      {
+		int cw = dpyinfo->default_char_width;
+		int ncells = cw > 0
+		  ? (glyph->pixel_width + cw - 1) / cw : 1;
+
+		if (face_id != current_face || !run)
+		  {
+		    if (jl->nruns >= WEB_MAX_RUNS)
+		      goto done;
+		    run = &jl->runs[jl->nruns++];
+		    run->face_id = face_id;
+		    run->text_len = 0;
+		    run->img_id = 0;
+		    run->img_w = 0;
+		    run->img_h = 0;
+		    current_face = face_id;
+		    json_register_face (js, face_id);
+		  }
+
+		for (int i = 0; i < ncells
+		       && run->text_len < WEB_RUN_TEXT_CAP; i++)
+		  run->text[run->text_len++] = ' ';
+		break;
+	      }
+
+	    case IMAGE_GLYPH:
+	      {
+		int cw = dpyinfo->default_char_width;
+		int ncells = cw > 0
+		  ? (glyph->pixel_width + cw - 1) / cw : 1;
+
+		if (jl->nruns >= WEB_MAX_RUNS)
 		  goto done;
 		run = &jl->runs[jl->nruns++];
 		run->face_id = face_id;
 		run->text_len = 0;
-		current_face = face_id;
+		run->img_id = 0;
+		run->img_w = 0;
+		run->img_h = 0;
+		current_face = -1;
 		json_register_face (js, face_id);
+
+		/* Record image info for browser rendering.  Use glyph
+		   display dimensions (respecting :width/:height spec
+		   keywords and scaling) rather than intrinsic image
+		   size.  */
+		int img_id = glyph->u.img_id;
+		struct image *img = IMAGE_FROM_ID (f, img_id);
+		fprintf (stderr, "DEBUG IMAGE_GLYPH: img_id=%d img=%p pw=%d asc=%d desc=%d ncells=%d area=%d\n",
+			 img_id, (void*)img, glyph->pixel_width, glyph->ascent, glyph->descent, ncells, area);
+		if (img)
+		  {
+		    run->img_id = img_id;
+		    run->img_w = glyph->pixel_width;
+		    run->img_h = glyph->ascent + glyph->descent;
+		  }
+
+		for (int i = 0; i < ncells
+		       && run->text_len < WEB_RUN_TEXT_CAP; i++)
+		  run->text[run->text_len++] = ' ';
+		break;
 	      }
 
-	    if (run->text_len < 1020)
-	      {
-		int n = encode_utf8 (c,
-				     (unsigned char *) run->text
-				     + run->text_len);
-		run->text_len += n;
-	      }
-	    break;
-	  }
-
-	case STRETCH_GLYPH:
-	  {
-	    int cw = dpyinfo->default_char_width;
-	    int ncells = cw > 0
-	      ? (glyph->pixel_width + cw - 1) / cw : 1;
-
-	    if (face_id != current_face || !run)
-	      {
-		if (jl->nruns >= 32)
-		  goto done;
-		run = &jl->runs[jl->nruns++];
-		run->face_id = face_id;
-		run->text_len = 0;
-		current_face = face_id;
-		json_register_face (js, face_id);
-	      }
-
-	    for (int i = 0; i < ncells && run->text_len < 4090; i++)
-	      run->text[run->text_len++] = ' ';
-	    break;
-	  }
-
-	case IMAGE_GLYPH:
-	  {
-	    int cw = dpyinfo->default_char_width;
-	    int ncells = cw > 0
-	      ? (glyph->pixel_width + cw - 1) / cw : 1;
-
-	    if (jl->nruns >= 32)
-	      goto done;
-	    run = &jl->runs[jl->nruns++];
-	    run->face_id = face_id;
-	    run->text_len = 0;
-	    current_face = -1;
-	    json_register_face (js, face_id);
-
-	    for (int i = 0; i < ncells && run->text_len < 4090; i++)
-	      run->text[run->text_len++] = ' ';
-	    break;
-	  }
-
-	default:
-	  break;
+	    default:
+	      break;
+	    }
 	}
     }
 
@@ -546,18 +643,17 @@ web_scroll_run (struct window *w, struct run *run)
   struct web_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
   struct json_frame_state *js = &dpyinfo->json_state;
 
-  int ch = dpyinfo->default_char_height;
-  if (ch <= 0)
-    return;
-
-  int delta_rows = (run->desired_y - run->current_y) / ch;
+  int delta_rows = run->desired_vpos - run->current_vpos;
   if (delta_rows == 0)
     return;
 
-  if (js->nscrolls < 16)
+  if (js->nscrolls < WEB_MAX_SCROLLS)
     {
       js->scrolls[js->nscrolls].window_id = w->sequence_number;
       js->scrolls[js->nscrolls].delta_rows = delta_rows;
+      js->scrolls[js->nscrolls].current_row = run->current_vpos;
+      js->scrolls[js->nscrolls].desired_row = run->desired_vpos;
+      js->scrolls[js->nscrolls].nrows = run->nrows;
       js->nscrolls++;
     }
 }
@@ -578,9 +674,308 @@ web_after_update_window_line (struct window *w,
 				    WINDOW_TO_FRAME_PIXEL_Y (w,
 							     desired_row->y));
       struct json_line *jl = json_get_line (jw, ri);
-      jl->complete = false; /* Clear so web_build_row_content re-reads.  */
+      if (jl)
+	jl->complete = false; /* Clear so web_build_row_content re-reads.  */
     }
   web_build_row_content (w, desired_row);
+}
+
+/* Base64 encoding table.  */
+static const char web_b64_table[] =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/* Encode binary data to base64 directly into the write buffer.  */
+static void
+web_write_base64 (struct web_display_info *dpyinfo,
+		  const unsigned char *data, size_t len)
+{
+  size_t olen = 4 * ((len + 2) / 3);
+  web_write_ensure (dpyinfo, olen);
+  char *start = (char *)dpyinfo->write_buf + dpyinfo->write_buf_len;
+  char *p = start;
+  size_t i;
+
+  for (i = 0; i + 2 < len; i += 3)
+    {
+      *p++ = web_b64_table[(data[i] >> 2) & 0x3F];
+      *p++ = web_b64_table[((data[i] & 0x3) << 4) | (data[i+1] >> 4)];
+      *p++ = web_b64_table[((data[i+1] & 0xF) << 2) | (data[i+2] >> 6)];
+      *p++ = web_b64_table[data[i+2] & 0x3F];
+    }
+  if (i < len)
+    {
+      *p++ = web_b64_table[(data[i] >> 2) & 0x3F];
+      if (i + 1 < len)
+	{
+	  *p++ = web_b64_table[((data[i] & 0x3) << 4) | (data[i+1] >> 4)];
+	  *p++ = web_b64_table[(data[i+1] & 0xF) << 2];
+	}
+      else
+	{
+	  *p++ = web_b64_table[(data[i] & 0x3) << 4];
+	  *p++ = '=';
+	}
+      *p++ = '=';
+    }
+  dpyinfo->write_buf_len += (p - start);
+}
+
+/* Detect MIME type from image spec or file extension.  */
+static const char *
+web_image_mime (struct image *img)
+{
+  Lisp_Object type = image_spec_value (img->spec, QCtype, NULL);
+  if (EQ (type, Qpng))
+    return "image/png";
+  if (EQ (type, Qjpeg))
+    return "image/jpeg";
+  if (EQ (type, Qsvg))
+    return "image/svg+xml";
+  if (EQ (type, Qgif))
+    return "image/gif";
+  /* Default to PNG as it's most common.  */
+  return "image/png";
+}
+
+#ifdef HAVE_PNG
+/* Dynamic buffer for libpng write callback.  */
+struct png_mem_buffer
+{
+  unsigned char *data;
+  size_t len;
+  size_t alloc;
+};
+
+static void
+web_png_write_cb (png_structp png_ptr, png_bytep data, png_size_t length)
+{
+  struct png_mem_buffer *buf = png_get_io_ptr (png_ptr);
+  if (buf->len + length > buf->alloc)
+    {
+      buf->alloc = (buf->len + length) * 2;
+      buf->data = xrealloc (buf->data, buf->alloc);
+    }
+  memcpy (buf->data + buf->len, data, length);
+  buf->len += length;
+}
+
+static void
+web_png_flush_cb (png_structp png_ptr)
+{
+  /* No-op for memory buffer.  */
+}
+
+/* Encode a pixel buffer (from image loading) to PNG in memory.
+   PIXMAP contains the 0xRRGGBB pixel data.  MASK, if non-NULL,
+   provides a 1-bit alpha channel (non-zero = opaque).
+   Returns malloc'd buffer in *OUT_DATA and length in *OUT_LEN.
+   Returns true on success.  */
+static bool
+web_encode_pixels_to_png (struct image *img, Emacs_Pixmap pixmap,
+			  Emacs_Pixmap mask,
+			  unsigned char **out_data, size_t *out_len)
+{
+  int width = img->width;
+  int height = img->height;
+  bool has_alpha = (mask != NULL);
+  int color_type = has_alpha ? PNG_COLOR_TYPE_RGBA : PNG_COLOR_TYPE_RGB;
+  int channels = has_alpha ? 4 : 3;
+
+  png_structp png_ptr = png_create_write_struct (PNG_LIBPNG_VER_STRING,
+						 NULL, NULL, NULL);
+  if (!png_ptr)
+    return false;
+
+  png_infop info_ptr = png_create_info_struct (png_ptr);
+  if (!info_ptr)
+    {
+      png_destroy_write_struct (&png_ptr, NULL);
+      return false;
+    }
+
+  if (setjmp (png_jmpbuf (png_ptr)))
+    {
+      png_destroy_write_struct (&png_ptr, &info_ptr);
+      return false;
+    }
+
+  struct png_mem_buffer buf = { .data = NULL, .len = 0, .alloc = 0 };
+  png_set_write_fn (png_ptr, &buf, web_png_write_cb, web_png_flush_cb);
+
+  png_set_IHDR (png_ptr, info_ptr, width, height, 8,
+		color_type, PNG_INTERLACE_NONE,
+		PNG_COMPRESSION_TYPE_DEFAULT,
+		PNG_FILTER_TYPE_DEFAULT);
+  png_write_info (png_ptr, info_ptr);
+
+  unsigned char *row = xmalloc (width * channels);
+  for (int y = 0; y < height; y++)
+    {
+      for (int x = 0; x < width; x++)
+	{
+	  unsigned long pixel = pixmap->data[y * width + x];
+	  row[x * channels + 0] = (pixel >> 16) & 0xFF;
+	  row[x * channels + 1] = (pixel >> 8) & 0xFF;
+	  row[x * channels + 2] = pixel & 0xFF;
+	  if (has_alpha)
+	    {
+	      unsigned long mpx = mask->data[y * width + x];
+	      row[x * channels + 3] = mpx ? 255 : 0;
+	    }
+	}
+      png_write_row (png_ptr, row);
+    }
+  xfree (row);
+
+  png_write_end (png_ptr, info_ptr);
+  png_destroy_write_struct (&png_ptr, &info_ptr);
+
+  *out_data = buf.data;
+  *out_len = buf.len;
+  return true;
+}
+#endif /* HAVE_PNG */
+
+/* Send image data for any new images referenced in this frame cycle.  */
+static void
+web_send_pending_images (struct frame *f, struct web_display_info *dpyinfo)
+{
+  struct json_frame_state *js = &dpyinfo->json_state;
+
+  for (int wi = 0; wi < js->nwindows; wi++)
+    {
+      struct json_window *jw = &js->windows[wi];
+      for (int li = 0; li < jw->nlines; li++)
+	{
+	  struct json_line *jl = &jw->lines[li];
+	  if (!jl->complete)
+	    continue;
+	  for (int ri = 0; ri < jl->nruns; ri++)
+	    {
+	      struct json_run *run = &jl->runs[ri];
+	      if (run->img_id <= 0)
+		continue;
+
+	      /* Check if already sent with the same image.  Image IDs
+		 can be reused when the image cache purges entries after
+		 GC, so we compare the spec hash to detect reuse.  */
+	      int id = run->img_id;
+	      struct image *img = IMAGE_FROM_ID (f, id);
+	      if (!img)
+		continue;
+
+	      unsigned int img_hash = (unsigned int) img->hash;
+	      if (img_hash == 0)
+		img_hash = 1;  /* Reserve 0 for "not sent".  */
+	      if (id < WEB_IMG_SENT_MAX
+		  && js->img_sent_hash[id] == img_hash)
+		continue;
+
+	      Lisp_Object file = image_spec_value (img->spec, QCfile, NULL);
+	      Lisp_Object data = image_spec_value (img->spec, QCdata, NULL);
+	      const char *mime = web_image_mime (img);
+	      bool sent = false;
+
+	      /* Check if this is a browser-native format that we can
+		 send as raw file/data bytes.  */
+	      Lisp_Object img_type = image_spec_value (img->spec, QCtype,
+						       NULL);
+	      bool browser_native = (EQ (img_type, Qpng)
+				     || EQ (img_type, Qjpeg)
+				     || EQ (img_type, Qgif)
+				     || EQ (img_type, Qsvg));
+
+	      if (browser_native && STRINGP (file))
+		{
+		  /* Browser-native format with file — read and send raw.  */
+		  file = image_find_image_file (file);
+		  if (!STRINGP (file))
+		    continue;
+		  const char *path = SSDATA (file);
+		  int fd = emacs_open (path, O_RDONLY, 0);
+		  if (fd < 0)
+		    continue;
+		  struct stat st;
+		  if (fstat (fd, &st) < 0 || st.st_size == 0)
+		    {
+		      emacs_close (fd);
+		      continue;
+		    }
+		  size_t file_size = st.st_size;
+		  unsigned char *buf = xmalloc (file_size);
+		  size_t total = 0;
+		  while (total < file_size)
+		    {
+		      ssize_t n = read (fd, buf + total, file_size - total);
+		      if (n <= 0)
+			break;
+		      total += n;
+		    }
+		  emacs_close (fd);
+		  if (total < file_size)
+		    {
+		      xfree (buf);
+		      continue;
+		    }
+
+		  web_write_printf (dpyinfo,
+				    "{\"type\":\"image_data\",\"id\":%d,"
+				    "\"mime\":\"%s\","
+				    "\"width\":%d,\"height\":%d,"
+				    "\"data\":\"",
+				    id, mime, img->width, img->height);
+		  web_write_base64 (dpyinfo, buf, file_size);
+		  WR_LIT (dpyinfo, "\"}\n");
+		  sent = true;
+		  xfree (buf);
+		}
+	      else if (browser_native && STRINGP (data))
+		{
+		  /* Browser-native format with inline data.  */
+		  const unsigned char *raw =
+		    (const unsigned char *) SSDATA (data);
+		  size_t raw_len = SBYTES (data);
+
+		  web_write_printf (dpyinfo,
+				    "{\"type\":\"image_data\",\"id\":%d,"
+				    "\"mime\":\"%s\","
+				    "\"width\":%d,\"height\":%d,"
+				    "\"data\":\"",
+				    id, mime, img->width, img->height);
+		  web_write_base64 (dpyinfo, raw, raw_len);
+		  WR_LIT (dpyinfo, "\"}\n");
+		  sent = true;
+		}
+#ifdef HAVE_PNG
+	      else if (img->pixmap)
+		{
+		  /* Non-browser-native format (XPM, XBM, PBM, etc.)
+		     or browser-native without raw source — re-encode
+		     from the decoded pixel buffer to PNG.  */
+		  unsigned char *png_data = NULL;
+		  size_t png_len = 0;
+		  if (web_encode_pixels_to_png (img, img->pixmap,
+						img->mask,
+						&png_data, &png_len))
+		    {
+		      web_write_printf (dpyinfo,
+					"{\"type\":\"image_data\",\"id\":%d,"
+					"\"mime\":\"image/png\","
+					"\"width\":%d,\"height\":%d,"
+					"\"data\":\"",
+					id, img->width, img->height);
+		      web_write_base64 (dpyinfo, png_data, png_len);
+		      WR_LIT (dpyinfo, "\"}\n");
+		      sent = true;
+		      xfree (png_data);
+		    }
+		}
+#endif
+	      if (sent && id < WEB_IMG_SENT_MAX)
+		js->img_sent_hash[id] = img_hash;
+	    }
+	}
+    }
 }
 
 static void
@@ -618,15 +1013,28 @@ web_flush_display (struct frame *f)
       color_to_hex (js->clear_bg, bg);
       web_write_printf (dpyinfo,
 			"{\"type\":\"clear_frame\",\"bg\":\"%s\"}\n", bg);
+
+      /* Reset image-sent tracking so reused image IDs are re-sent.
+	 The image cache can reuse slots after GC, so stale data
+	 in the browser must be refreshed on major display changes.  */
+      memset (js->img_sent_hash, 0, sizeof js->img_sent_hash);
     }
 
   /* 2. Scroll events.  */
   for (int i = 0; i < js->nscrolls; i++)
     web_write_printf (dpyinfo,
 		      "{\"type\":\"scroll\",\"window_id\":%ld,"
-		      "\"delta_rows\":%d}\n",
+		      "\"delta_rows\":%d,\"current_row\":%d,"
+		      "\"desired_row\":%d,\"nrows\":%d}\n",
 		      (long)js->scrolls[i].window_id,
-		      js->scrolls[i].delta_rows);
+		      js->scrolls[i].delta_rows,
+		      js->scrolls[i].current_row,
+		      js->scrolls[i].desired_row,
+		      js->scrolls[i].nrows);
+
+  /* 2b. Send image data for any new images before the frame_update
+     that references them.  */
+  web_send_pending_images (f, dpyinfo);
 
   /* 3. Build frame_update JSON if we have any data.  */
   if (js->nwindows > 0 || js->nface_ids > 0)
@@ -697,6 +1105,14 @@ web_flush_display (struct frame *f)
 		  Lisp_Object slant = font->props[FONT_SLANT_INDEX];
 		  if (FIXNUMP (slant) && XFIXNUM (slant) >= 200)
 		    WR_LIT (dpyinfo, ",\"italic\":true");
+
+		  Lisp_Object family = font->props[FONT_FAMILY_INDEX];
+		  if (SYMBOLP (family) && !NILP (family))
+		    {
+		      const char *fam = SSDATA (SYMBOL_NAME (family));
+		      WR_LIT (dpyinfo, ",\"family\":");
+		      web_write_json_string (dpyinfo, fam, strlen (fam));
+		    }
 		}
 
 	      if (face->underline != FACE_NO_UNDERLINE)
@@ -773,6 +1189,14 @@ web_flush_display (struct frame *f)
 						run->face_id);
 			      web_write_json_string (dpyinfo, run->text,
 						     run->text_len);
+			      if (run->img_id > 0)
+				web_write_printf (dpyinfo,
+						  ",\"img_id\":%d"
+						  ",\"img_w\":%d"
+						  ",\"img_h\":%d",
+						  run->img_id,
+						  run->img_w,
+						  run->img_h);
 			      WR_LIT (dpyinfo, "}");
 			    }
 			  WR_LIT (dpyinfo, "]");
@@ -902,6 +1326,8 @@ web_draw_window_cursor (struct window *w,
   if (!jw || jw->id != w->sequence_number)
     {
       jw = json_get_window (js, w->sequence_number);
+      if (!jw)
+	return;
       jw->x = WINDOW_LEFT_EDGE_COL (w);
       jw->y = WINDOW_TOP_EDGE_LINE (w);
       jw->w = WINDOW_TOTAL_COLS (w);
@@ -2210,7 +2636,11 @@ web_query_frame_background_color (struct frame *f, Emacs_Color *bgcolor)
 static void
 web_free_pixmap (struct frame *f, Emacs_Pixmap pixmap)
 {
-  /* No-op.  */
+  if (pixmap)
+    {
+      xfree (pixmap->data);
+      xfree (pixmap);
+    }
 }
 
 static void
@@ -2548,11 +2978,13 @@ web_menu_show (struct frame *f, int x, int y, int menuflags,
   return unbind_to (count, result);
 }
 
+#ifdef HAVE_EXT_MENU_BAR
 static void
 web_activate_menubar (struct frame *f)
 {
   /* No-op.  */
 }
+#endif
 
 static Lisp_Object
 web_popup_dialog (struct frame *f, Lisp_Object header,

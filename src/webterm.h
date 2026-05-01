@@ -41,6 +41,13 @@ struct web_bitmap_record
   int height, width, depth;
 };
 
+#define WEB_MAX_WINDOWS 12
+#define WEB_MAX_LINES 160
+#define WEB_MAX_RUNS 32
+#define WEB_MAX_FACES 512
+#define WEB_MAX_SCROLLS 64
+#define WEB_RUN_TEXT_CAP 1024
+
 /* Information about the web display we are connected to.  */
 
 struct web_display_info
@@ -167,24 +174,33 @@ struct web_display_info
         bool complete;   /* Set by after_update_window_line.  */
         struct json_run {
           int face_id;
-          char text[1024];
+          char text[WEB_RUN_TEXT_CAP];
           int text_len;
-        } runs[32];
+          int img_id;   /* >0 if this run is an image glyph */
+          int img_w;    /* image width in pixels */
+          int img_h;    /* image height in pixels */
+        } runs[WEB_MAX_RUNS];
         int nruns;
-      } lines[80];
+      } lines[WEB_MAX_LINES];
       int nlines;
       struct { int row, col, type; bool active, visible; } cursor;
       bool has_cursor;
       bool active;
       bool has_complete_lines;  /* Any after_update_window_line calls?  */
       bool is_menu_bar;         /* True for the menu bar pseudo-window.  */
-    } windows[8];
+    } windows[WEB_MAX_WINDOWS];
     int nwindows;
 
-    int face_ids[512];        /* faces referenced this cycle */
+    int face_ids[WEB_MAX_FACES];        /* faces referenced this cycle */
     int nface_ids;
 
-    struct { EMACS_INT window_id; int delta_rows; } scrolls[16];
+    struct {
+      EMACS_INT window_id;
+      int delta_rows;
+      int current_row;
+      int desired_row;
+      int nrows;
+    } scrolls[WEB_MAX_SCROLLS];
     int nscrolls;
 
     bool clear_pending;
@@ -193,6 +209,13 @@ struct web_display_info
     struct json_window *current_window;
     struct json_line *current_line;
     int current_line_row;
+
+    /* Track which image IDs have been sent to avoid resending.
+       Stores the image spec hash per slot so we detect when an image
+       cache slot is reused with a different image (after GC).  A zero
+       hash means "not sent".  */
+    #define WEB_IMG_SENT_MAX 2048
+    unsigned int img_sent_hash[WEB_IMG_SENT_MAX];
   } json_state;
 
 #ifdef HAVE_PTHREAD
@@ -329,6 +352,14 @@ extern void web_term_init (void);
 extern void syms_of_webterm (void);
 extern void syms_of_webfns (void);
 extern void syms_of_webfont (void);
+
+/* Write buffer API — used by webfns.c for load_font, image_data, etc.  */
+extern void web_write_str (struct web_display_info *dpyinfo,
+			   const char *s, int len);
+extern void web_write_json_string (struct web_display_info *dpyinfo,
+				   const char *s, int len);
+extern void web_write_flush (struct web_display_info *dpyinfo);
+#define WR_LIT(dp, s) web_write_str (dp, s, sizeof (s) - 1)
 
 extern struct font_driver const webfont_driver;
 
