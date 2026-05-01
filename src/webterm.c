@@ -593,8 +593,6 @@ web_build_row_content (struct window *w, struct glyph_row *row)
 		   size.  */
 		int img_id = glyph->u.img_id;
 		struct image *img = IMAGE_FROM_ID (f, img_id);
-		fprintf (stderr, "DEBUG IMAGE_GLYPH: img_id=%d img=%p pw=%d asc=%d desc=%d ncells=%d area=%d\n",
-			 img_id, (void*)img, glyph->pixel_width, glyph->ascent, glyph->descent, ncells, area);
 		if (img)
 		  {
 		    run->img_id = img_id;
