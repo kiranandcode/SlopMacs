@@ -88,6 +88,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include TERM_HEADER
 #endif /* HAVE_WINDOW_SYSTEM */
 
+#ifdef HAVE_WEB
+#include "webterm.h"
+#endif
+
 #ifdef WINDOWSNT
 char const DEV_TTY[] = "CONOUT$";
 #else
@@ -1365,6 +1369,11 @@ command_loop_1 (void)
       /* Make sure the current window's buffer is selected.  */
       set_buffer_internal (XBUFFER (XWINDOW (selected_window)->contents));
 
+#ifdef HAVE_WEB
+      if (web_async_active_p ())
+	web_process_pending_events ();
+#endif
+
       /* Display any malloc warning that just came out.  Use while because
 	 displaying one warning can cause another.  */
 
@@ -1684,6 +1693,7 @@ command_loop_1 (void)
       if (!NILP (KVAR (current_kboard, defining_kbd_macro))
 	  && NILP (KVAR (current_kboard, Vprefix_arg)))
 	finalize_kbd_macro_chars ();
+
     }
 }
 

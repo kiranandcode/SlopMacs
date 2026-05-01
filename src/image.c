@@ -205,6 +205,26 @@ typedef android_pixmap Pixmap;
 #define n_planes n_image_planes
 #endif
 
+#ifdef HAVE_WEB
+typedef struct web_bitmap_record Bitmap_Record;
+
+#define NO_PIXMAP 0
+
+#define GET_PIXEL(ximg, x, y) 0
+#define PUT_PIXEL(ximg, x, y, pixel) ((void) 0)
+
+#define PIX_MASK_RETAIN	0
+#define PIX_MASK_DRAW	1
+
+#define RGB_TO_ULONG(r, g, b) (((r) << 16) | ((g) << 8) | (b))
+#define RED_FROM_ULONG(color)	(((color) >> 16) & 0xff)
+#define GREEN_FROM_ULONG(color)	(((color) >> 8) & 0xff)
+#define BLUE_FROM_ULONG(color)	((color) & 0xff)
+#define RED16_FROM_ULONG(color)		(RED_FROM_ULONG (color) * 0x101)
+#define GREEN16_FROM_ULONG(color)	(GREEN_FROM_ULONG (color) * 0x101)
+#define BLUE16_FROM_ULONG(color)	(BLUE_FROM_ULONG (color) * 0x101)
+#endif
+
 static void image_disable_image (struct frame *, struct image *);
 static void image_edge_detection (struct frame *, struct image *, Lisp_Object,
                                   Lisp_Object);
@@ -7213,7 +7233,7 @@ image_edge_detection (struct frame *f, struct image *img,
 
 
 #if defined HAVE_X_WINDOWS || defined USE_CAIRO || defined HAVE_HAIKU	\
-  || defined HAVE_ANDROID
+  || defined HAVE_ANDROID || defined HAVE_WEB
 
 static void
 image_pixmap_draw_cross (struct frame *f, Emacs_Pixmap pixmap,
@@ -7259,13 +7279,17 @@ image_pixmap_draw_cross (struct frame *f, Emacs_Pixmap pixmap,
   android_draw_line (pixmap, gc, x, y, x + width - 1, y + height - 1);
   android_draw_line (pixmap, gc, x, y + height - 1, x + width - 1, y);
   android_free_gc (gc);
+#elif defined HAVE_WEB
+  /* Stub: web backend does not draw on pixmaps yet.  */
+  (void) f; (void) pixmap; (void) x; (void) y;
+  (void) width; (void) height; (void) color;
 #else
   emacs_abort ();
 #endif
 #endif
 }
 
-#endif	/* HAVE_X_WINDOWS || USE_CAIRO || HAVE_HAIKU */
+#endif	/* HAVE_X_WINDOWS || USE_CAIRO || HAVE_HAIKU || HAVE_WEB */
 
 /* Transform image IMG on frame F so that it looks disabled.  */
 
@@ -7308,17 +7332,18 @@ image_disable_image (struct frame *f, struct image *img)
 #ifndef HAVE_NTGUI
 #ifndef HAVE_NS  /* TODO: NS support, however this not needed for toolbars */
 
-#if !defined USE_CAIRO && !defined HAVE_HAIKU && !defined HAVE_ANDROID
+#if !defined USE_CAIRO && !defined HAVE_HAIKU && !defined HAVE_ANDROID \
+  && !defined HAVE_WEB
 #define CrossForeground(f) BLACK_PIX_DEFAULT (f)
 #define MaskForeground(f)  WHITE_PIX_DEFAULT (f)
-#else  /* USE_CAIRO || HAVE_HAIKU */
+#else  /* USE_CAIRO || HAVE_HAIKU || HAVE_WEB */
 #define CrossForeground(f) 0
 #define MaskForeground(f)  PIX_MASK_DRAW
 #endif	/* USE_CAIRO || HAVE_HAIKU */
 
-#if !defined USE_CAIRO && !defined HAVE_HAIKU
+#if !defined USE_CAIRO && !defined HAVE_HAIKU && !defined HAVE_WEB
       image_sync_to_pixmaps (f, img);
-#endif	/* !USE_CAIRO && !HAVE_HAIKU */
+#endif	/* !USE_CAIRO && !HAVE_HAIKU && !HAVE_WEB */
       image_pixmap_draw_cross (f, img->pixmap, 0, 0, img->width, img->height,
 			       CrossForeground (f));
       if (img->mask)

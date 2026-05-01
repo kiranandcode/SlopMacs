@@ -65,6 +65,7 @@ enum output_method
   output_pgtk,
   output_haiku,
   output_android,
+  output_web,
 };
 
 /* Input queue declarations and hooks.  */
@@ -540,6 +541,7 @@ struct terminal
     struct pgtk_display_info *pgtk;		/* pgtkterm.h */
     struct haiku_display_info *haiku;		/* haikuterm.h */
     struct android_display_info *android;	/* androidterm.h */
+    struct web_display_info *web;		/* webterm.h */
   } display_info;
 
 
@@ -614,7 +616,7 @@ struct terminal
   void (*query_frame_background_color) (struct frame *f, Emacs_Color *bgcolor);
 
 #if defined (HAVE_X_WINDOWS) || defined (HAVE_NTGUI) || defined (HAVE_PGTK) \
-  || defined (HAVE_ANDROID)
+  || defined (HAVE_ANDROID) || defined (HAVE_WEB)
   /* On frame F, translate pixel colors to RGB values for the NCOLORS
      colors in COLORS.  Use cached information, if available.  */
 
@@ -957,6 +959,9 @@ extern struct terminal *terminal_list;
 #elif defined (HAVE_ANDROID)
 #define TERMINAL_FONT_CACHE(t)						\
   (t->type == output_android ? t->display_info.android->name_list_element : Qnil)
+#elif defined (HAVE_WEB)
+#define TERMINAL_FONT_CACHE(t)						\
+  (t->type == output_web ? t->display_info.web->name_list_element : Qnil)
 #endif
 
 extern struct terminal *decode_live_terminal (Lisp_Object);

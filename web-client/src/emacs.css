@@ -1,0 +1,430 @@
+/* Emacs web display — GUI-quality rendering with GPU acceleration.  */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #1a1a2e;
+}
+
+/* ---- app root ---- */
+.app-root {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- loading screen ---- */
+.loading-screen {
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(145deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  animation: fadeIn 0.4s ease;
+}
+
+.loading-content {
+  text-align: center;
+}
+
+.loading-logo {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  font-size: 36px;
+  font-weight: 400;
+  color: #e2e2e2;
+  letter-spacing: 6px;
+  text-transform: uppercase;
+  margin-bottom: 32px;
+  text-shadow: 0 0 40px rgba(124, 106, 246, 0.4);
+  animation: logoPulse 2s ease-in-out infinite;
+}
+
+.loading-bar {
+  width: 200px;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 1px;
+  margin: 0 auto 20px;
+  overflow: hidden;
+}
+
+.loading-bar-fill {
+  width: 40%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, #7c6af6, transparent);
+  border-radius: 1px;
+  animation: loadingSlide 1.2s ease-in-out infinite;
+}
+
+.loading-status {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.35);
+  letter-spacing: 1px;
+}
+
+.loading-screen.fading {
+  animation: fadeOut 0.6s ease 1.4s forwards;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; pointer-events: none; }
+}
+
+@keyframes logoPulse {
+  0%, 100% { opacity: 0.9; }
+  50% { opacity: 1; text-shadow: 0 0 60px rgba(124, 106, 246, 0.6); }
+}
+
+@keyframes loadingSlide {
+  0% { transform: translateX(-200%); }
+  100% { transform: translateX(600%); }
+}
+
+/* ---- frame container ---- */
+.frame-container {
+  flex: 1;
+  overflow: hidden;
+  outline: none;
+}
+
+/* ---- emacs frame ---- */
+.emacs-frame {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  font-family: 'Menlo', 'SF Mono', 'Cascadia Code', 'Fira Code',
+               'JetBrains Mono', 'Consolas', 'Liberation Mono', monospace;
+  font-size: 16px;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeSpeed;
+  font-variant-ligatures: none;
+  contain: strict;
+  animation: frameReveal 0.3s ease;
+}
+
+.emacs-text-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  z-index: 0;
+  contain: strict;
+}
+
+@keyframes frameReveal {
+  from { opacity: 0; transform: scale(0.998); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* ---- windows ---- */
+.emacs-window {
+  position: absolute;
+  overflow: hidden;
+  left: 0;
+  top: 0;
+  will-change: transform;
+  contain: strict;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* ---- lines ---- */
+.emacs-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  white-space: pre;
+  height: var(--char-h, 19px);
+  line-height: var(--char-h, 19px);
+  overflow: hidden;
+  contain: strict;
+}
+
+/* Mode line — GUI Emacs 3D raised appearance.  */
+.emacs-line.mode-line {
+  border-top: 1px solid rgba(255, 255, 255, 0.2);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.6);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  position: relative;
+  z-index: 1;
+}
+
+/* Runs (text spans) — class "r" for minimal HTML size.  */
+.r {
+  /* Inline styles for color/bg from face data.  */
+}
+
+/* ---- cursor ---- */
+.cursor-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+  contain: strict;
+}
+
+.emacs-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--char-w, 10px);
+  height: var(--char-h, 19px);
+  pointer-events: none;
+  color: currentColor;
+  will-change: transform, opacity;
+}
+
+.emacs-cursor.cursor-box {
+  background: currentColor;
+  mix-blend-mode: difference;
+  animation: cursorBlink 1s step-end infinite;
+}
+
+.emacs-cursor.cursor-hollow {
+  outline: 1px solid currentColor;
+  outline-offset: -1px;
+  animation: cursorBlink 1s step-end infinite;
+}
+
+.emacs-cursor.cursor-bar {
+  border-left: 2px solid currentColor;
+  animation: cursorBlink 1s step-end infinite;
+}
+
+.emacs-cursor.cursor-hbar {
+  border-bottom: 2px solid currentColor;
+  animation: cursorBlink 1s step-end infinite;
+}
+
+.emacs-cursor.cursor-inactive {
+  outline: 1px solid currentColor;
+  outline-offset: -1px;
+}
+
+@keyframes cursorBlink {
+  50% { opacity: 0; }
+}
+
+/* ---- GUI menu bar ---- */
+.menu-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  align-items: center;
+  background: linear-gradient(to bottom, #3c3c3c, #2d2d2d);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  color: #e0e0e0;
+  padding: 0 4px;
+  z-index: 5;
+  user-select: none;
+}
+
+.menubar-item {
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.1s;
+}
+
+.menubar-item:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.menubar-item:active {
+  background: #0078d4;
+  color: #fff;
+}
+
+/* ---- status bar ---- */
+.status-bar {
+  height: 24px;
+  line-height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+  background: #111118;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-dot.connected {
+  background: #2ecc71;
+  box-shadow: 0 0 6px rgba(46, 204, 113, 0.5);
+}
+.status-dot.connecting {
+  background: #f1c40f;
+  animation: dotPulse 1s ease-in-out infinite;
+}
+.status-dot.disconnected {
+  background: #e74c3c;
+}
+
+@keyframes dotPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.status-text {
+  font-size: 11px;
+}
+
+.status-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.msg-count {
+  opacity: 0.5;
+  font-size: 11px;
+}
+
+.interrupt-btn {
+  background: rgba(192, 57, 43, 0.8);
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.interrupt-btn:hover { background: #e74c3c; }
+
+/* ---- busy pill ---- */
+.busy-pill {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  background: rgba(231, 76, 60, 0.9);
+  color: #fff;
+  padding: 4px 14px;
+  border-radius: 12px;
+  font-size: 12px;
+  z-index: 100;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  box-shadow: 0 2px 8px rgba(231, 76, 60, 0.3);
+  animation: slideIn 0.2s ease;
+}
+
+@keyframes slideIn {
+  from { transform: translateY(-10px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* ---- popup menu ---- */
+.menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  outline: none;
+}
+
+.menu-popup {
+  position: absolute;
+  background: #2a2a2a;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  min-width: 200px;
+  max-width: 400px;
+  padding: 4px 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  color: #e0e0e0;
+  overflow: hidden;
+  animation: menuIn 0.12s ease;
+}
+
+@keyframes menuIn {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.menu-pane-title {
+  padding: 4px 12px;
+  font-weight: 600;
+  color: #777;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.menu-item {
+  padding: 6px 12px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  transition: background 0.08s;
+}
+
+.menu-item:hover {
+  background: #0078d4;
+  color: #fff;
+}
+
+.menu-item.disabled {
+  color: #555;
+  cursor: default;
+}
+
+.menu-item.disabled:hover {
+  background: transparent;
+  color: #555;
+}
+
+.menu-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.menu-key {
+  color: #666;
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.menu-item:hover .menu-key {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.menu-separator {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  margin: 4px 8px;
+}

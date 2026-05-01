@@ -318,6 +318,8 @@ See also `frame-live-p'.  */)
       return Qhaiku;
     case output_android:
       return Qandroid;
+    case output_web:
+      return Qweb;
     default:
       emacs_abort ();
     }
@@ -6041,7 +6043,8 @@ gui_set_scroll_bar_height (struct frame *f, Lisp_Object arg, Lisp_Object oldval)
 }
 
 #if (defined HAVE_PGTK || defined HAVE_NTGUI \
-     || defined HAVE_HAIKU || defined HAVE_NS)
+     || defined HAVE_HAIKU || defined HAVE_NS \
+     || defined HAVE_WEB)
 void
 gui_set_alpha (struct frame *f, Lisp_Object arg, Lisp_Object oldval)
 {
@@ -7257,6 +7260,7 @@ syms_of_frame (void)
   DEFSYM (Qpgtk, "pgtk");
   DEFSYM (Qhaiku, "haiku");
   DEFSYM (Qandroid, "android");
+  DEFSYM (Qweb, "web");
   DEFSYM (Qvisible, "visible");
   DEFSYM (Qbuffer_predicate, "buffer-predicate");
   DEFSYM (Qbuffer_list, "buffer-list");

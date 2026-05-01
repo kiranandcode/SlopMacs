@@ -30,6 +30,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "buffer.h"
 #include "pdumper.h"
 #include "atimer.h"
+#ifdef HAVE_WEB
+#include "webterm.h"
+#endif
 
 /* Non-nil means record all fset's and provide's, to be undone
    if the file being autoloaded is not fully loaded.
@@ -2579,6 +2582,10 @@ eval_sub (Lisp_Object form)
     return form;
 
   maybe_quit ();
+#ifdef HAVE_WEB
+  if (web_async_active_p () && web_yield_due_p ())
+    web_process_pending_events ();
+#endif
 
   maybe_gc ();
 

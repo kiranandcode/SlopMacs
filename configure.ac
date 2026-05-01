@@ -572,6 +572,7 @@ AC_ARG_WITH([ns],[AS_HELP_STRING([--with-ns],
 On by default on macOS.])],[],[with_ns=maybe])
 OPTION_DEFAULT_OFF([w32], [use native MS Windows GUI in a Cygwin build])
 OPTION_DEFAULT_OFF([pgtk], [use GTK to support window systems other than X])
+OPTION_DEFAULT_OFF([web], [use WebSocket/HTML5 Canvas display backend])
 
 OPTION_DEFAULT_ON([gpm],[don't use -lgpm for mouse support on a GNU/Linux console])
 OPTION_DEFAULT_IFAVAILABLE([dbus],[compile with D-Bus support])
@@ -2707,9 +2708,13 @@ if test "${with_pgtk}" = "yes"; then
   window_system=pgtk
 fi
 
+if test "${with_web}" = "yes"; then
+  window_system=web
+fi
+
 if test "${ANDROID}" != "yes"; then
   AC_PATH_X
-  if test "$no_x" != yes && test "${with_pgtk}" != "yes"; then
+  if test "$no_x" != yes && test "${with_pgtk}" != "yes" && test "${with_web}" != "yes"; then
     window_system=x11
   fi
 fi
@@ -3168,6 +3173,7 @@ HAVE_X_WINDOWS=no
 HAVE_X11=no
 USE_X_TOOLKIT=none
 HAVE_PGTK=no
+HAVE_WEB=no
 
 case "${window_system}" in
   x11 )
@@ -3213,9 +3219,16 @@ dnl use the toolkit if we have gtk, or X11R5 or newer.
   android )
     term_header=androidterm.h
   ;;
+  web )
+    term_header=webterm.h
+    USE_X_TOOLKIT=none
+    HAVE_WEB=yes
+    AC_DEFINE([HAVE_WEB], [1], [Define to 1 if you have the web display backend.])
+  ;;
 esac
 
 AC_SUBST([HAVE_PGTK])
+AC_SUBST([HAVE_WEB])
 
 if test "$window_system" = none && test "X$with_x" != "Xno"; then
    AC_CHECK_PROG([HAVE_XSERVER], [X], [true], [false])
@@ -3572,7 +3585,8 @@ HAVE_RSVG=no
 if test "${HAVE_X11}" = "yes" || test "${HAVE_NS}" = "yes" \
    || test "${opsys}" = "mingw32" || test "${HAVE_BE_APP}" = "yes" \
    || test "${window_system}" = "pgtk" \
-   || test "${REALLY_ANDROID}" = "yes"; then
+   || test "${REALLY_ANDROID}" = "yes" \
+   || test "${HAVE_WEB}" = "yes"; then
   if test "${with_rsvg}" != "no"; then
     RSVG_REQUIRED=2.14.0
     AS_IF([test "${REALLY_ANDROID}" = "yes"],
@@ -3600,7 +3614,8 @@ if test "${with_webp}" != "no"; then
    if test "${HAVE_X11}" = "yes" || test "${opsys}" = "mingw32" \
    || test "${HAVE_W32}" = "yes" || test "${HAVE_NS}" = "yes" \
    || test "${HAVE_BE_APP}" = "yes" || test "${HAVE_PGTK}" = "yes" \
-   || test "${REALLY_ANDROID}" = "yes"; then
+   || test "${REALLY_ANDROID}" = "yes" \
+   || test "${HAVE_WEB}" = "yes"; then
       WEBP_REQUIRED=0.6.0
       # Definitions from webp/decode.h are in libwebp, and those from
       # webp/demux.h in libwebpdemux, which depends on libwebp.
@@ -3912,6 +3927,12 @@ if test "$window_system" = "pgtk"; then
 fi
 AC_SUBST([PGTK_OBJ])
 AC_SUBST([PGTK_LIBS])
+
+WEB_OBJ=
+if test "$window_system" = "web"; then
+  WEB_OBJ="webterm.o webfns.o webfont.o web_event_loop.o"
+fi
+AC_SUBST([WEB_OBJ])
 
 AC_CHECK_FUNCS([malloc_trim])
 
@@ -4920,7 +4941,8 @@ JPEG_CFLAGS=
 if test "${HAVE_X11}" = "yes" || test "${HAVE_W32}" = "yes" \
    || test "${HAVE_NS}" = "yes" || test "${HAVE_BE_APP}" = "yes" \
    || test "$window_system" = "pgtk" \
-   || test "${REALLY_ANDROID}" = "yes"; then
+   || test "${REALLY_ANDROID}" = "yes" \
+   || test "${HAVE_WEB}" = "yes"; then
   if test "${with_jpeg}" != "no"; then
     if test "${REALLY_ANDROID}" = "yes"; then
       # Look for libjpeg using the NDK.
@@ -5334,7 +5356,8 @@ if test "${with_png}" != no; then
   elif test "${HAVE_X11}" = "yes" || test "${HAVE_W32}" = "yes" \
        || test "${HAVE_NS}" = "yes" || test "${HAVE_BE_APP}" = "yes" \
        || test "$window_system" = "pgtk" \
-       || test "${REALLY_ANDROID}" = "yes"; then
+       || test "${REALLY_ANDROID}" = "yes" \
+       || test "${HAVE_WEB}" = "yes"; then
     EMACS_CHECK_MODULES([PNG], [libpng >= 1.0.0])
     if test $HAVE_PNG = yes; then
       LIBPNG=$PNG_LIBS
@@ -5413,7 +5436,8 @@ if test "${opsys}" = "mingw32"; then
 elif test "${HAVE_X11}" = "yes" || test "${HAVE_W32}" = "yes" \
      || test "${HAVE_NS}" = "yes" || test "${HAVE_BE_APP}" = "yes" \
      || test "$window_system" = "pgtk" \
-     || test "${REALLY_ANDROID}" = "yes"; then
+     || test "${REALLY_ANDROID}" = "yes" \
+     || test "${HAVE_WEB}" = "yes"; then
   if test "${with_tiff}" != "no"; then
     if test "${REALLY_ANDROID}" != "yes"; then
       AC_CHECK_HEADER([tiffio.h],
@@ -5461,6 +5485,7 @@ elif test "${HAVE_X11}" = "yes" && test "${with_gif}" != "no" \
         || test "${HAVE_W32}" = "yes" || test "${HAVE_NS}" = "yes" \
 	|| test "${HAVE_BE_APP}" = "yes" || test "$window_system" = "pgtk" \
 	|| test "${REALLY_ANDROID}" = "yes" \
+	|| test "${HAVE_WEB}" = "yes" \
 	&& test "${with_gif}" != "no"; then
   AC_CHECK_HEADER([gif_lib.h],
 # EGifPutExtensionLast only exists from version libungif-4.1.0b1.

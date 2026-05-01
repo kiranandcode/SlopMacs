@@ -2456,6 +2456,12 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
       syms_of_sfntfont_android ();
 #endif /* !ANDROID_STUBIFY */
 #endif /* HAVE_ANDROID */
+#ifdef HAVE_WEB
+      syms_of_webterm ();
+      syms_of_webfns ();
+      syms_of_webfont ();
+      syms_of_fontset ();
+#endif /* HAVE_WEB */
 
       syms_of_gnutls ();
 

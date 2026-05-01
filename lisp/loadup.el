@@ -320,6 +320,11 @@
       (load "term/common-win")
       (load "term/android-win")))
 
+(if (featurep 'web)
+    (progn
+      (load "term/common-win")
+      (load "term/web-win")))
+
 (if (or (eq system-type 'windows-nt)
         (featurep 'w32))
     (progn

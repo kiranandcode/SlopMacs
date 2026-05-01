@@ -170,6 +170,13 @@ typedef struct android_image *Emacs_Pix_Container;
 typedef struct android_image *Emacs_Pix_Context;
 #endif
 
+#ifdef HAVE_WEB
+#include "webgui.h"
+typedef struct web_display_info Display_Info;
+typedef Emacs_Pixmap Emacs_Pix_Container;
+typedef Emacs_Pixmap Emacs_Pix_Context;
+#endif
+
 #ifdef HAVE_WINDOW_SYSTEM
 # include <time.h>
 # include "fontset.h"
@@ -3736,7 +3743,7 @@ ptrdiff_t lookup_image (struct frame *, Lisp_Object, int);
 Lisp_Object image_spec_value (Lisp_Object, Lisp_Object, bool *);
 
 #if defined HAVE_X_WINDOWS || defined USE_CAIRO || defined HAVE_NS \
-  || defined HAVE_HAIKU || defined HAVE_ANDROID
+  || defined HAVE_HAIKU || defined HAVE_ANDROID || defined HAVE_WEB
 #define RGB_PIXEL_COLOR unsigned long
 #endif
 

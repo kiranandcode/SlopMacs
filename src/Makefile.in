@@ -325,6 +325,8 @@ W32_LIBS=@W32_LIBS@
 PGTK_OBJ=@PGTK_OBJ@
 PGTK_LIBS=@PGTK_LIBS@
 
+WEB_OBJ=@WEB_OBJ@
+
 ## emacs.res if HAVE_W32
 EMACSRES = @EMACSRES@
 ## If HAVE_W32, compiler arguments for including
@@ -466,7 +468,7 @@ base_obj = dispnew.o frame.o scroll.o xdisp.o menu.o $(XMENU_OBJ) window.o     \
 	itree.o json.o 							       \
 	$(MSDOS_OBJ) $(MSDOS_X_OBJ) $(NS_OBJ) $(CYGWIN_OBJ) $(FONT_OBJ)        \
 	$(W32_OBJ) $(WINDOW_SYSTEM_OBJ) $(XGSELOBJ)			       \
-	$(HAIKU_OBJ) $(PGTK_OBJ) $(ANDROID_OBJ)
+	$(HAIKU_OBJ) $(PGTK_OBJ) $(ANDROID_OBJ) $(WEB_OBJ)
 doc_obj = $(base_obj) $(NS_OBJC_OBJ)
 obj = $(doc_obj) $(HAIKU_CXX_OBJ)
 

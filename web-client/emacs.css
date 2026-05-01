@@ -1,0 +1,229 @@
+/* Emacs web display — DOM-based rendering styles.  */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body, #app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  font-family: system-ui, sans-serif;
+}
+
+.emacs-frame {
+  width: 100%;
+  height: calc(100% - 24px);
+  position: relative;
+  font-family: monospace;
+  font-size: 16px;
+  line-height: 1.2;
+  overflow: hidden;
+}
+
+.emacs-window {
+  position: absolute;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #444;
+}
+
+/* GUI menu bar.  */
+.menu-bar {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  background: linear-gradient(to bottom, #3c3c3c, #2d2d2d);
+  border-bottom: 1px solid #555;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  color: #e0e0e0;
+  padding: 0 4px;
+  gap: 0;
+  z-index: 5;
+  user-select: none;
+}
+
+.menubar-item {
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.1s;
+}
+
+.menubar-item:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.menubar-item:active {
+  background: #0078d4;
+  color: #fff;
+}
+
+.emacs-line {
+  white-space: pre;
+  height: 1.2em;
+  overflow: hidden;
+}
+
+.emacs-line.mode-line {
+  /* Mode line styles handled by face inline styles.  */
+}
+
+.emacs-run {
+  /* Inline styles applied per-run for colors/decorations.  */
+}
+
+/* Cursor styles.  */
+.cursor-box {
+  animation: blink 1s step-end infinite;
+}
+
+.cursor-hollow {
+  outline: 1px solid currentColor;
+  outline-offset: -1px;
+  animation: blink 1s step-end infinite;
+}
+
+.cursor-bar {
+  border-left: 2px solid currentColor;
+  animation: blink 1s step-end infinite;
+}
+
+.cursor-hbar {
+  border-bottom: 2px solid currentColor;
+  animation: blink 1s step-end infinite;
+}
+
+.cursor-inactive {
+  outline: 1px solid currentColor;
+  outline-offset: -1px;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+/* Status bar.  */
+#status-bar {
+  height: 24px;
+  line-height: 24px;
+  padding: 0 8px;
+  font-size: 12px;
+  color: #888;
+  background: #111;
+  border-top: 1px solid #333;
+  display: flex;
+  justify-content: space-between;
+  font-family: system-ui, sans-serif;
+}
+
+#status-bar .connected { color: #2ecc71; }
+#status-bar .connecting { color: #f1c40f; }
+#status-bar .disconnected { color: #e74c3c; }
+
+#busy-overlay {
+  display: none;
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  background: rgba(231, 76, 60, 0.9);
+  color: #fff;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  z-index: 10;
+  font-family: system-ui, sans-serif;
+}
+
+#interrupt-btn {
+  background: #c0392b;
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+  padding: 0 8px;
+  font-size: 11px;
+  cursor: pointer;
+  display: none;
+}
+#interrupt-btn:hover { background: #e74c3c; }
+
+/* Popup menu styles.  */
+.menu-backdrop {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 50;
+  outline: none;
+}
+
+.menu-popup {
+  position: absolute;
+  background: #2d2d2d;
+  border: 1px solid #555;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  min-width: 200px;
+  max-width: 400px;
+  padding: 4px 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  color: #e0e0e0;
+  overflow: hidden;
+}
+
+.menu-pane-title {
+  padding: 4px 12px;
+  font-weight: 600;
+  color: #999;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.menu-item {
+  padding: 6px 12px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+}
+
+.menu-item:hover {
+  background: #0078d4;
+  color: #fff;
+}
+
+.menu-item.disabled {
+  color: #666;
+  cursor: default;
+}
+
+.menu-item.disabled:hover {
+  background: transparent;
+  color: #666;
+}
+
+.menu-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.menu-key {
+  color: #888;
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.menu-item:hover .menu-key {
+  color: rgba(255,255,255,0.7);
+}
+
+.menu-separator {
+  height: 1px;
+  background: #444;
+  margin: 4px 8px;
+}

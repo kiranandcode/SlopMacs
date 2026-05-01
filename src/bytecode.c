@@ -23,6 +23,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "sysstdio.h"
 #include "buffer.h"
 #include "window.h"
+#ifdef HAVE_WEB
+#include "webterm.h"
+#endif
 
 /* Define BYTE_CODE_SAFE true to enable some minor sanity checking,
    useful for debugging the byte compiler.  It defaults to false.  */
@@ -858,12 +861,19 @@ exec_byte_code (Lisp_Object fun, ptrdiff_t args_template,
 	    if (BYTE_CODE_SAFE && !(arg >= 0 && arg < bytestr_length))
 	      emacs_abort ();
 	    const unsigned char *new_pc = bytestr_data + arg;
-	    quitcounter += new_pc < pc;
-	    if (!quitcounter)
+	    if (new_pc < pc)
 	      {
-		quitcounter = 1;
-		maybe_gc ();
 		maybe_quit ();
+#ifdef HAVE_WEB
+		if (web_async_active_p () && web_yield_due_p ())
+		  web_process_pending_events ();
+#endif
+		quitcounter++;
+		if (!quitcounter)
+		  {
+		    quitcounter = 1;
+		    maybe_gc ();
+		  }
 	      }
 	    pc = new_pc;
 	    NEXT;
