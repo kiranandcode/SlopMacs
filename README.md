@@ -1,6 +1,8 @@
 <p align="center">
-  <img src="EmacsSlop.svg" alt="EmacsSlop" width="700"/>
+  <img src="EmacsSlop.svg" alt="EmacsSlop" width="200"/>
 </p>
+
+<h1 align="center">EmacsSlop</h1>
 
 <p align="center">
   <strong>GNU Emacs but the internals got rewritten by Claude and Codex</strong>

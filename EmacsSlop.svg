@@ -1,152 +1,140 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" viewBox="0 0 800 320" height="320" width="800">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     viewBox="0 0 512 512" height="512" width="512">
   <defs>
-    <!-- Background gradient - vaporwave sunset -->
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#0d0221;stop-opacity:1"/>
-      <stop offset="40%" style="stop-color:#1a0533;stop-opacity:1"/>
-      <stop offset="100%" style="stop-color:#0a0a2e;stop-opacity:1"/>
-    </linearGradient>
-
-    <!-- Neon pink glow for icon circle -->
-    <radialGradient id="iconGlow" cx="50%" cy="50%" r="50%">
-      <stop offset="70%" style="stop-color:#ff006e;stop-opacity:0"/>
-      <stop offset="100%" style="stop-color:#ff006e;stop-opacity:0.4"/>
-    </radialGradient>
-
-    <!-- Icon circle gradient - hot pink to electric purple -->
-    <linearGradient id="circleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#ff006e;stop-opacity:1"/>
-      <stop offset="50%" style="stop-color:#8338ec;stop-opacity:1"/>
-      <stop offset="100%" style="stop-color:#3a86ff;stop-opacity:1"/>
-    </linearGradient>
-
-    <!-- Icon circle stroke - neon -->
-    <linearGradient id="circleStroke" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#ff006e;stop-opacity:1"/>
-      <stop offset="100%" style="stop-color:#00f5d4;stop-opacity:1"/>
-    </linearGradient>
-
-    <!-- Text gradient -->
-    <linearGradient id="textGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+    <!-- Main circle gradient: hot pink -> purple -> cyan -->
+    <linearGradient id="slopCircle" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" style="stop-color:#ff006e"/>
-      <stop offset="35%" style="stop-color:#ff006e"/>
-      <stop offset="55%" style="stop-color:#8338ec"/>
-      <stop offset="100%" style="stop-color:#3a86ff"/>
-    </linearGradient>
-
-    <!-- Slop text gradient - toxic green to yellow -->
-    <linearGradient id="slopGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" style="stop-color:#39ff14"/>
-      <stop offset="50%" style="stop-color:#00ff87"/>
+      <stop offset="45%" style="stop-color:#8338ec"/>
       <stop offset="100%" style="stop-color:#00f5d4"/>
     </linearGradient>
 
-    <!-- Glow filters -->
+    <!-- Stroke gradient -->
+    <linearGradient id="slopStroke" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ff006e"/>
+      <stop offset="50%" style="stop-color:#39ff14"/>
+      <stop offset="100%" style="stop-color:#00f5d4"/>
+    </linearGradient>
+
+    <!-- Shadow gradient -->
+    <radialGradient id="shadowGrad" cx="50%" cy="50%" r="50%">
+      <stop offset="80%" style="stop-color:#0d0221;stop-opacity:0.6"/>
+      <stop offset="100%" style="stop-color:#0d0221;stop-opacity:0"/>
+    </radialGradient>
+
+    <!-- Drip gradient -->
+    <linearGradient id="dripGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#00f5d4"/>
+      <stop offset="100%" style="stop-color:#00f5d4;stop-opacity:0.1"/>
+    </linearGradient>
+    <linearGradient id="dripGrad2" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#ff006e"/>
+      <stop offset="100%" style="stop-color:#ff006e;stop-opacity:0.05"/>
+    </linearGradient>
+    <linearGradient id="dripGrad3" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#39ff14"/>
+      <stop offset="100%" style="stop-color:#39ff14;stop-opacity:0.05"/>
+    </linearGradient>
+
+    <!-- Neon glow -->
     <filter id="neonGlow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feGaussianBlur stdDeviation="4" result="blur"/>
       <feMerge>
         <feMergeNode in="blur"/>
         <feMergeNode in="SourceGraphic"/>
       </feMerge>
     </filter>
 
-    <filter id="heavyGlow" x="-30%" y="-30%" width="160%" height="160%">
-      <feGaussianBlur stdDeviation="12" result="blur"/>
-      <feMerge>
-        <feMergeNode in="blur"/>
-        <feMergeNode in="blur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
+    <!-- Heavy outer glow for shadow -->
+    <filter id="shadowBlur" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="9"/>
     </filter>
 
-    <filter id="textGlow" x="-10%" y="-20%" width="120%" height="140%">
-      <feGaussianBlur stdDeviation="3" result="blur"/>
-      <feMerge>
-        <feMergeNode in="blur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
+    <!-- Chromatic aberration filter - red channel offset -->
+    <filter id="chromaR" x="-5%" y="-5%" width="110%" height="110%">
+      <feOffset dx="3" dy="2" in="SourceGraphic" result="shifted"/>
+      <feFlood flood-color="#ff006e" flood-opacity="0.35" result="color"/>
+      <feComposite in="color" in2="shifted" operator="in"/>
     </filter>
 
-    <filter id="subtleGlow" x="-10%" y="-10%" width="120%" height="120%">
-      <feGaussianBlur stdDeviation="2" result="blur"/>
-      <feMerge>
-        <feMergeNode in="blur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
+    <!-- Chromatic aberration filter - cyan channel offset -->
+    <filter id="chromaB" x="-5%" y="-5%" width="110%" height="110%">
+      <feOffset dx="-3" dy="-1" in="SourceGraphic" result="shifted"/>
+      <feFlood flood-color="#00f5d4" flood-opacity="0.3" result="color"/>
+      <feComposite in="color" in2="shifted" operator="in"/>
     </filter>
 
     <!-- Scanline pattern -->
     <pattern id="scanlines" patternUnits="userSpaceOnUse" width="4" height="4">
-      <rect width="4" height="2" fill="rgba(0,0,0,0.15)"/>
+      <rect width="4" height="2" fill="rgba(0,0,0,0.12)"/>
     </pattern>
 
-    <!-- Grid pattern for background -->
-    <pattern id="grid" patternUnits="userSpaceOnUse" width="40" height="40">
-      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(138,43,226,0.08)" stroke-width="0.5"/>
-    </pattern>
+    <!-- Noise texture -->
+    <filter id="noise" x="0%" y="0%" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="4" result="noise"/>
+      <feColorMatrix type="saturate" values="0" in="noise" result="gray"/>
+      <feBlend in="SourceGraphic" in2="gray" mode="overlay" result="blend"/>
+      <feComposite in="blend" in2="SourceGraphic" operator="in"/>
+    </filter>
+
+    <!-- Quill path reused -->
+    <path id="quill" d="m 175,422.3 c 0,0 19.7,1.4 45.1,-0.8 10.3,-0.9 49.3,-4.7 78.5,-11.1 0,0 35.6,-7.6 54.6,-14.6 19.9,-7.3 30.8,-13.6 35.6,-22.4 -0.2,-1.8 1.5,-8.2 -7.7,-12.1 -23.5,-9.9 -50.7,-8.1 -104.6,-9.2 -59.8,-2.1 -79.7,-12.1 -90.3,-20.1 -10.2,-8.2 -5.1,-30.8 38.5,-50.7 21.9,-10.6 107.9,-30.2 107.9,-30.2 -28.9,-14.3 -82.9,-39.5 -94,-44.9 -9.7,-4.8 -25.3,-11.9 -28.7,-20.6 -3.8,-8.3 9,-15.5 16.2,-17.6 23.1,-6.7 55.8,-10.8 85.6,-11.3 14.9,-0.2 17.4,-1.2 17.4,-1.2 20.6,-3.4 34.2,-17.5 28.5,-39.9 -5.1,-22.8 -31.9,-36.2 -57.3,-31.6 -24,4.4 -81.7,21.2 -81.7,21.2 71.4,-0.6 83.4,0.6 88.7,8 3.2,4.4 -1.4,10.5 -20.5,13.6 -20.7,3.4 -63.8,7.5 -63.8,7.5 -41.3,2.5 -70.5,2.6 -79.2,21.1 -5.7,12.1 6.1,22.8 11.3,29.4 21.8,24.3 53.4,37.4 73.7,47 7.6,3.6 30.1,10.5 30.1,10.5 -65.9,-3.6 -113.4,16.6 -141.3,39.9 -31.5,29.2 -17.6,63.9 47,85.3 38.2,12.6 57.1,18.6 114,13.5 33.5,-1.8 38.8,-0.7 39.1,2 0.5,3.9 -37.2,13.5 -47.5,16.5 -26.2,7.6 -94.8,22.8 -95.2,22.9 z"/>
   </defs>
 
-  <!-- Background -->
-  <rect width="800" height="320" fill="url(#bgGrad)" rx="16"/>
+  <!-- Tilted 2 degrees for that "off" feeling -->
+  <g transform="rotate(2, 256, 256)">
 
-  <!-- Perspective grid (vaporwave floor) -->
-  <rect width="800" height="320" fill="url(#grid)"/>
-
-  <!-- Decorative horizontal lines -->
-  <line x1="0" y1="310" x2="800" y2="310" stroke="#ff006e" stroke-width="0.5" opacity="0.3"/>
-  <line x1="0" y1="10" x2="800" y2="10" stroke="#3a86ff" stroke-width="0.5" opacity="0.3"/>
-
-  <!-- === ICON (left side) === -->
-  <g transform="translate(60, 30)">
-    <!-- Outer glow ring -->
-    <circle cx="130" cy="130" r="140" fill="url(#iconGlow)" filter="url(#heavyGlow)"/>
+    <!-- Shadow (shifted down-right, blurred) -->
+    <ellipse cx="262" cy="264" rx="233" ry="233"
+             style="fill:#1a0533;opacity:0.5;filter:url(#shadowBlur)"/>
 
     <!-- Main circle -->
-    <circle cx="130" cy="130" r="118" fill="url(#circleGrad)" stroke="url(#circleStroke)" stroke-width="5"/>
+    <ellipse cx="255" cy="256" rx="230" ry="230"
+             style="fill:url(#slopCircle);stroke:url(#slopStroke);stroke-width:7"/>
 
-    <!-- GNU quill path (simplified & scaled from original) -->
-    <g transform="translate(-4, -4) scale(0.505)">
-      <path d="M 175,422 c 0,0 19.7,1.4 45.1,-0.8 10.3,-0.9 49.3,-4.7 78.5,-11.1 0,0 35.6,-7.6 54.6,-14.6 19.9,-7.3 30.8,-13.6 35.6,-22.4 -0.2,-1.8 1.5,-8.2 -7.7,-12.1 -23.5,-9.9 -50.7,-8.1 -104.6,-9.2 -59.8,-2.1 -79.7,-12.1 -90.3,-20.1 -10.2,-8.2 -5,-30.8 38.5,-50.7 21.9,-10.6 107.9,-30.2 107.9,-30.2 -28.9,-14.3 -82.9,-39.5 -94,-44.9 -9.7,-4.8 -25.3,-11.9 -28.7,-20.6 -3.8,-8.3 9,-15.5 16.2,-17.6 23.1,-6.7 55.8,-10.8 85.6,-11.3 14.9,-0.2 17.4,-1.2 17.4,-1.2 20.6,-3.4 34.2,-17.5 28.5,-39.9 -5.1,-22.8 -31.9,-36.2 -57.3,-31.6 -24,4.4 -81.7,21.2 -81.7,21.2 71.4,-0.6 83.4,0.6 88.7,8 3.2,4.4 -1.4,10.5 -20.5,13.6 -20.7,3.4 -63.8,7.5 -63.8,7.5 -41.3,2.5 -70.5,2.6 -79.2,21.1 -5.7,12.1 6.1,22.8 11.3,29.4 21.8,24.3 53.4,37.4 73.7,47 7.6,3.6 30.1,10.5 30.1,10.5 -65.9,-3.6 -113.4,16.6 -141.3,39.9 -31.5,29.2 -17.6,63.9 47,85.3 38.2,12.6 57.1,18.6 114,13.5 33.5,-1.8 38.8,-0.7 39.1,2 0.5,3.9 -37.2,13.5 -47.5,16.5 -26.2,7.6 -94.8,22.8 -95.2,22.9 z"
-        fill="#ffffff" fill-opacity="0.95" filter="url(#subtleGlow)"/>
-    </g>
+    <!-- Noise/grain overlay on circle -->
+    <ellipse cx="255" cy="256" rx="230" ry="230"
+             style="fill:white;opacity:0.06;filter:url(#noise)"/>
 
-    <!-- Scanline overlay on icon -->
-    <circle cx="130" cy="130" r="118" fill="url(#scanlines)" opacity="0.3"/>
+    <!-- Chromatic aberration: red-shifted quill (behind) -->
+    <use href="#quill" filter="url(#chromaR)"/>
+
+    <!-- Chromatic aberration: cyan-shifted quill (behind) -->
+    <use href="#quill" filter="url(#chromaB)"/>
+
+    <!-- Main quill (white, with neon glow) -->
+    <use href="#quill" style="fill:#ffffff;fill-opacity:0.95" filter="url(#neonGlow)"/>
+
+    <!-- Scanline overlay clipped to circle -->
+    <ellipse cx="255" cy="256" rx="230" ry="230"
+             style="fill:url(#scanlines);opacity:0.25"/>
+
+    <!-- === DRIPS from bottom of circle === -->
+    <!-- Drip 1: long cyan drip -->
+    <path d="M 200,478 Q 200,480 199,490 Q 198,510 200,530 Q 201,545 199,555 Q 198,562 200,560"
+          stroke="url(#dripGrad)" stroke-width="5" fill="none" stroke-linecap="round" opacity="0.8"/>
+
+    <!-- Drip 2: medium pink drip -->
+    <path d="M 310,486 Q 311,495 310,515 Q 309,528 311,535"
+          stroke="url(#dripGrad2)" stroke-width="4" fill="none" stroke-linecap="round" opacity="0.7"/>
+
+    <!-- Drip 3: short green drip -->
+    <path d="M 155,465 Q 154,472 155,490 Q 156,498 154,505"
+          stroke="url(#dripGrad3)" stroke-width="3.5" fill="none" stroke-linecap="round" opacity="0.65"/>
+
+    <!-- Drip 4: tiny cyan drip -->
+    <path d="M 350,480 Q 349,488 350,500"
+          stroke="url(#dripGrad)" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.5"/>
+
+    <!-- Drip 5: medium green drip left side -->
+    <path d="M 120,440 Q 119,450 118,468 Q 117,478 119,485"
+          stroke="url(#dripGrad3)" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.55"/>
+
+    <!-- === GLITCH BARS (horizontal displacement artifacts) === -->
+    <rect x="60" y="180" width="380" height="3" fill="#ff006e" opacity="0.15"/>
+    <rect x="100" y="182" width="280" height="1.5" fill="#00f5d4" opacity="0.2"/>
+    <rect x="45" y="340" width="420" height="2" fill="#39ff14" opacity="0.12"/>
+    <rect x="80" y="342" width="320" height="1" fill="#ff006e" opacity="0.18"/>
+
   </g>
-
-  <!-- === TEXT (right side) === -->
-  <g transform="translate(340, 0)">
-    <!-- "Emacs" -->
-    <text x="0" y="128" font-family="'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace" font-size="82" font-weight="900" fill="url(#textGrad)" filter="url(#textGlow)" letter-spacing="-2">
-      Emacs
-    </text>
-
-    <!-- "Slop" with toxic glow -->
-    <text x="5" y="200" font-family="'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace" font-size="78" font-weight="900" fill="url(#slopGrad)" filter="url(#neonGlow)" letter-spacing="-1">
-      Slop
-    </text>
-
-    <!-- Tagline -->
-    <text x="8" y="245" font-family="'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace" font-size="15" fill="#8b8ba7" letter-spacing="4" font-weight="400">
-      AI-REWRITTEN INTERNALS
-    </text>
-
-    <!-- Version badge -->
-    <g transform="translate(8, 260)">
-      <rect width="90" height="24" rx="4" fill="rgba(255,0,110,0.15)" stroke="#ff006e" stroke-width="0.8"/>
-      <text x="45" y="16" font-family="'SF Mono', monospace" font-size="11" fill="#ff006e" text-anchor="middle" font-weight="600">v31.0.50</text>
-    </g>
-    <g transform="translate(108, 260)">
-      <rect width="105" height="24" rx="4" fill="rgba(57,255,20,0.1)" stroke="#39ff14" stroke-width="0.8"/>
-      <text x="52" y="16" font-family="'SF Mono', monospace" font-size="11" fill="#39ff14" text-anchor="middle" font-weight="600">web-display</text>
-    </g>
-    <g transform="translate(223, 260)">
-      <rect width="72" height="24" rx="4" fill="rgba(58,134,255,0.1)" stroke="#3a86ff" stroke-width="0.8"/>
-      <text x="36" y="16" font-family="'SF Mono', monospace" font-size="11" fill="#3a86ff" text-anchor="middle" font-weight="600">claude</text>
-    </g>
-  </g>
-
-  <!-- Scanline overlay on everything -->
-  <rect width="800" height="320" fill="url(#scanlines)" opacity="0.1" rx="16"/>
 </svg>
