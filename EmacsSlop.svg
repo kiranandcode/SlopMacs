@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
-     viewBox="0 0 512 512" height="512" width="512">
+     viewBox="-40 -70 592 650" height="650" width="592">
   <defs>
     <!-- Main circle gradient: hot pink -> purple -> cyan -->
     <linearGradient id="slopCircle" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -16,25 +16,85 @@
       <stop offset="100%" style="stop-color:#00f5d4"/>
     </linearGradient>
 
-    <!-- Shadow gradient -->
-    <radialGradient id="shadowGrad" cx="50%" cy="50%" r="50%">
-      <stop offset="80%" style="stop-color:#0d0221;stop-opacity:0.6"/>
-      <stop offset="100%" style="stop-color:#0d0221;stop-opacity:0"/>
+    <!-- Ear inner pink -->
+    <linearGradient id="earInner" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#ff69b4"/>
+      <stop offset="100%" style="stop-color:#ff006e"/>
+    </linearGradient>
+
+    <!-- Claude gradient -->
+    <radialGradient id="claudeGrad" cx="50%" cy="40%" r="50%">
+      <stop offset="0%" style="stop-color:#e8956a"/>
+      <stop offset="100%" style="stop-color:#cc7755"/>
     </radialGradient>
 
-    <!-- Drip gradient -->
-    <linearGradient id="dripGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+    <!-- Drip gradients -->
+    <linearGradient id="dripCyan" x1="0%" y1="0%" x2="0%" y2="100%">
       <stop offset="0%" style="stop-color:#00f5d4"/>
-      <stop offset="100%" style="stop-color:#00f5d4;stop-opacity:0.1"/>
+      <stop offset="100%" style="stop-color:#00f5d4;stop-opacity:0"/>
     </linearGradient>
-    <linearGradient id="dripGrad2" x1="0%" y1="0%" x2="0%" y2="100%">
+    <linearGradient id="dripPink" x1="0%" y1="0%" x2="0%" y2="100%">
       <stop offset="0%" style="stop-color:#ff006e"/>
-      <stop offset="100%" style="stop-color:#ff006e;stop-opacity:0.05"/>
+      <stop offset="100%" style="stop-color:#ff006e;stop-opacity:0"/>
     </linearGradient>
-    <linearGradient id="dripGrad3" x1="0%" y1="0%" x2="0%" y2="100%">
+    <linearGradient id="dripGreen" x1="0%" y1="0%" x2="0%" y2="100%">
       <stop offset="0%" style="stop-color:#39ff14"/>
-      <stop offset="100%" style="stop-color:#39ff14;stop-opacity:0.05"/>
+      <stop offset="100%" style="stop-color:#39ff14;stop-opacity:0"/>
     </linearGradient>
+    <linearGradient id="dripPurple" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#8338ec"/>
+      <stop offset="100%" style="stop-color:#8338ec;stop-opacity:0"/>
+    </linearGradient>
+
+    <!-- ===== DISTORTION: Melting warp on the whole icon ===== -->
+    <filter id="meltWarp" x="-5%" y="-5%" width="110%" height="115%">
+      <feTurbulence type="turbulence" baseFrequency="0.015" numOctaves="3" seed="3" result="turb"/>
+      <feDisplacementMap in="SourceGraphic" in2="turb" scale="18" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+
+    <!-- Heavier warp for the quill specifically -->
+    <filter id="quillWarp" x="-8%" y="-8%" width="116%" height="120%">
+      <feTurbulence type="turbulence" baseFrequency="0.02" numOctaves="4" seed="7" result="turb"/>
+      <feDisplacementMap in="SourceGraphic" in2="turb" scale="12" xChannelSelector="R" yChannelSelector="G" result="warped"/>
+      <!-- Add glow on top of warp -->
+      <feGaussianBlur in="warped" stdDeviation="2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="warped"/>
+      </feMerge>
+    </filter>
+
+    <!-- Chromatic aberration - red -->
+    <filter id="chromaR" x="-5%" y="-5%" width="115%" height="115%">
+      <feTurbulence type="turbulence" baseFrequency="0.018" numOctaves="3" seed="5" result="turb"/>
+      <feDisplacementMap in="SourceGraphic" in2="turb" scale="10" xChannelSelector="R" yChannelSelector="G" result="warped"/>
+      <feOffset dx="5" dy="3" in="warped" result="shifted"/>
+      <feFlood flood-color="#ff006e" flood-opacity="0.3" result="color"/>
+      <feComposite in="color" in2="shifted" operator="in"/>
+    </filter>
+
+    <!-- Chromatic aberration - cyan -->
+    <filter id="chromaB" x="-5%" y="-5%" width="115%" height="115%">
+      <feTurbulence type="turbulence" baseFrequency="0.018" numOctaves="3" seed="5" result="turb"/>
+      <feDisplacementMap in="SourceGraphic" in2="turb" scale="10" xChannelSelector="R" yChannelSelector="G" result="warped"/>
+      <feOffset dx="-4" dy="-2" in="warped" result="shifted"/>
+      <feFlood flood-color="#00f5d4" flood-opacity="0.25" result="color"/>
+      <feComposite in="color" in2="shifted" operator="in"/>
+    </filter>
+
+    <!-- Chromatic aberration - green -->
+    <filter id="chromaG" x="-5%" y="-5%" width="115%" height="115%">
+      <feTurbulence type="turbulence" baseFrequency="0.018" numOctaves="3" seed="5" result="turb"/>
+      <feDisplacementMap in="SourceGraphic" in2="turb" scale="10" xChannelSelector="R" yChannelSelector="G" result="warped"/>
+      <feOffset dx="2" dy="-4" in="warped" result="shifted"/>
+      <feFlood flood-color="#39ff14" flood-opacity="0.15" result="color"/>
+      <feComposite in="color" in2="shifted" operator="in"/>
+    </filter>
+
+    <!-- Shadow blur -->
+    <filter id="shadowBlur" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="9"/>
+    </filter>
 
     <!-- Neon glow -->
     <filter id="neonGlow" x="-20%" y="-20%" width="140%" height="140%">
@@ -45,23 +105,20 @@
       </feMerge>
     </filter>
 
-    <!-- Heavy outer glow for shadow -->
-    <filter id="shadowBlur" x="-30%" y="-30%" width="160%" height="160%">
-      <feGaussianBlur stdDeviation="9"/>
+    <!-- Sparkle glow -->
+    <filter id="sparkGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
     </filter>
 
-    <!-- Chromatic aberration filter - red channel offset -->
-    <filter id="chromaR" x="-5%" y="-5%" width="110%" height="110%">
-      <feOffset dx="3" dy="2" in="SourceGraphic" result="shifted"/>
-      <feFlood flood-color="#ff006e" flood-opacity="0.35" result="color"/>
-      <feComposite in="color" in2="shifted" operator="in"/>
-    </filter>
-
-    <!-- Chromatic aberration filter - cyan channel offset -->
-    <filter id="chromaB" x="-5%" y="-5%" width="110%" height="110%">
-      <feOffset dx="-3" dy="-1" in="SourceGraphic" result="shifted"/>
-      <feFlood flood-color="#00f5d4" flood-opacity="0.3" result="color"/>
-      <feComposite in="color" in2="shifted" operator="in"/>
+    <!-- Circle warp (subtle, makes it not perfectly round) -->
+    <filter id="circleWarp" x="-5%" y="-5%" width="110%" height="115%">
+      <feTurbulence type="turbulence" baseFrequency="0.008" numOctaves="2" seed="42" result="turb"/>
+      <feDisplacementMap in="SourceGraphic" in2="turb" scale="14" xChannelSelector="R" yChannelSelector="G"/>
     </filter>
 
     <!-- Scanline pattern -->
@@ -69,72 +126,187 @@
       <rect width="4" height="2" fill="rgba(0,0,0,0.12)"/>
     </pattern>
 
-    <!-- Noise texture -->
-    <filter id="noise" x="0%" y="0%" width="100%" height="100%">
-      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="4" result="noise"/>
-      <feColorMatrix type="saturate" values="0" in="noise" result="gray"/>
-      <feBlend in="SourceGraphic" in2="gray" mode="overlay" result="blend"/>
-      <feComposite in="blend" in2="SourceGraphic" operator="in"/>
-    </filter>
-
-    <!-- Quill path reused -->
+    <!-- Quill path -->
     <path id="quill" d="m 175,422.3 c 0,0 19.7,1.4 45.1,-0.8 10.3,-0.9 49.3,-4.7 78.5,-11.1 0,0 35.6,-7.6 54.6,-14.6 19.9,-7.3 30.8,-13.6 35.6,-22.4 -0.2,-1.8 1.5,-8.2 -7.7,-12.1 -23.5,-9.9 -50.7,-8.1 -104.6,-9.2 -59.8,-2.1 -79.7,-12.1 -90.3,-20.1 -10.2,-8.2 -5.1,-30.8 38.5,-50.7 21.9,-10.6 107.9,-30.2 107.9,-30.2 -28.9,-14.3 -82.9,-39.5 -94,-44.9 -9.7,-4.8 -25.3,-11.9 -28.7,-20.6 -3.8,-8.3 9,-15.5 16.2,-17.6 23.1,-6.7 55.8,-10.8 85.6,-11.3 14.9,-0.2 17.4,-1.2 17.4,-1.2 20.6,-3.4 34.2,-17.5 28.5,-39.9 -5.1,-22.8 -31.9,-36.2 -57.3,-31.6 -24,4.4 -81.7,21.2 -81.7,21.2 71.4,-0.6 83.4,0.6 88.7,8 3.2,4.4 -1.4,10.5 -20.5,13.6 -20.7,3.4 -63.8,7.5 -63.8,7.5 -41.3,2.5 -70.5,2.6 -79.2,21.1 -5.7,12.1 6.1,22.8 11.3,29.4 21.8,24.3 53.4,37.4 73.7,47 7.6,3.6 30.1,10.5 30.1,10.5 -65.9,-3.6 -113.4,16.6 -141.3,39.9 -31.5,29.2 -17.6,63.9 47,85.3 38.2,12.6 57.1,18.6 114,13.5 33.5,-1.8 38.8,-0.7 39.1,2 0.5,3.9 -37.2,13.5 -47.5,16.5 -26.2,7.6 -94.8,22.8 -95.2,22.9 z"/>
+
+    <!-- Sparkle shapes -->
+    <path id="sparkle4" d="M 0,-10 C 1,-3 3,-1 10,0 C 3,1 1,3 0,10 C -1,3 -3,1 -10,0 C -3,-1 -1,-3 0,-10 Z"/>
+    <path id="claudeSpark" d="M 0,-12 C 2,-4 4,-2 12,0 C 4,2 2,4 0,12 C -2,4 -4,2 -12,0 C -4,-2 -2,-4 0,-12 Z"/>
   </defs>
 
-  <!-- Tilted 2 degrees for that "off" feeling -->
-  <g transform="rotate(2, 256, 256)">
+  <!-- ============================================ -->
+  <!-- MAIN ICON: tilted, warped, melting           -->
+  <!-- ============================================ -->
+  <g transform="rotate(3, 256, 256)">
 
-    <!-- Shadow (shifted down-right, blurred) -->
-    <ellipse cx="262" cy="264" rx="233" ry="233"
-             style="fill:#1a0533;opacity:0.5;filter:url(#shadowBlur)"/>
+    <!-- Shadow -->
+    <ellipse cx="262" cy="268" rx="236" ry="236"
+             style="fill:#1a0533;opacity:0.45;filter:url(#shadowBlur)"/>
 
-    <!-- Main circle -->
-    <ellipse cx="255" cy="256" rx="230" ry="230"
-             style="fill:url(#slopCircle);stroke:url(#slopStroke);stroke-width:7"/>
+    <!-- ===== CAT EARS (warped with the circle) ===== -->
+    <g filter="url(#circleWarp)">
+      <!-- Left ear -->
+      <path d="M 95,85 L 50,-40 L 180,48 Z" fill="url(#slopCircle)" stroke="url(#slopStroke)" stroke-width="4" stroke-linejoin="round"/>
+      <path d="M 108,70 L 70,-20 L 168,48 Z" fill="url(#earInner)" opacity="0.7"/>
+      <!-- Right ear -->
+      <path d="M 415,85 L 460,-40 L 330,48 Z" fill="url(#slopCircle)" stroke="url(#slopStroke)" stroke-width="4" stroke-linejoin="round"/>
+      <path d="M 402,70 L 440,-20 L 340,48 Z" fill="url(#earInner)" opacity="0.7"/>
+    </g>
 
-    <!-- Noise/grain overlay on circle -->
-    <ellipse cx="255" cy="256" rx="230" ry="230"
-             style="fill:white;opacity:0.06;filter:url(#noise)"/>
+    <!-- ===== MAIN CIRCLE (warped - not perfectly round) ===== -->
+    <g filter="url(#circleWarp)">
+      <ellipse cx="255" cy="256" rx="230" ry="230"
+               style="fill:url(#slopCircle);stroke:url(#slopStroke);stroke-width:7"/>
+    </g>
 
-    <!-- Chromatic aberration: red-shifted quill (behind) -->
+    <!-- ===== QUILL: triple chromatic aberration + warp ===== -->
+    <!-- Red ghost (warped + offset) -->
     <use href="#quill" filter="url(#chromaR)"/>
-
-    <!-- Chromatic aberration: cyan-shifted quill (behind) -->
+    <!-- Cyan ghost (warped + offset) -->
     <use href="#quill" filter="url(#chromaB)"/>
+    <!-- Green ghost (warped + offset) -->
+    <use href="#quill" filter="url(#chromaG)"/>
+    <!-- Main quill (warped + glowing) -->
+    <use href="#quill" style="fill:#ffffff;fill-opacity:0.93" filter="url(#quillWarp)"/>
 
-    <!-- Main quill (white, with neon glow) -->
-    <use href="#quill" style="fill:#ffffff;fill-opacity:0.95" filter="url(#neonGlow)"/>
+    <!-- Scanlines clipped to circle area -->
+    <g filter="url(#circleWarp)">
+      <ellipse cx="255" cy="256" rx="230" ry="230"
+               style="fill:url(#scanlines);opacity:0.2"/>
+    </g>
 
-    <!-- Scanline overlay clipped to circle -->
-    <ellipse cx="255" cy="256" rx="230" ry="230"
-             style="fill:url(#scanlines);opacity:0.25"/>
+    <!-- ===== UWU FACE (warped with turbulence) ===== -->
+    <g filter="url(#meltWarp)" opacity="0.5">
+      <!-- ^ ^ eyes -->
+      <path d="M 185,310 L 197,292 L 209,310" stroke="#fff" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M 301,310 L 313,292 L 325,310" stroke="#fff" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- w mouth -->
+      <path d="M 218,342 Q 238,360 255,342 Q 272,360 292,342" stroke="#ff69b4" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+    </g>
+    <!-- Blush (warped) -->
+    <g filter="url(#meltWarp)" opacity="0.25">
+      <ellipse cx="168" cy="332" rx="18" ry="9" fill="#ff69b4"/>
+      <ellipse cx="342" cy="332" rx="18" ry="9" fill="#ff69b4"/>
+    </g>
 
-    <!-- === DRIPS from bottom of circle === -->
-    <!-- Drip 1: long cyan drip -->
-    <path d="M 200,478 Q 200,480 199,490 Q 198,510 200,530 Q 201,545 199,555 Q 198,562 200,560"
-          stroke="url(#dripGrad)" stroke-width="5" fill="none" stroke-linecap="round" opacity="0.8"/>
+    <!-- ===== MELTING DRIPS (thick, blobby, oozing) ===== -->
+    <!-- Big center drip -->
+    <path d="M 252,486 Q 250,500 251,525 Q 252,548 250,565 Q 249,575 251,580 Q 252,583 254,580"
+          stroke="url(#dripPurple)" stroke-width="10" fill="none" stroke-linecap="round" opacity="0.7"/>
+    <!-- Thick cyan drip left -->
+    <path d="M 190,480 Q 188,495 189,518 Q 190,538 188,552 Q 187,560 189,558"
+          stroke="url(#dripCyan)" stroke-width="8" fill="none" stroke-linecap="round" opacity="0.75"/>
+    <!-- Thick pink drip right -->
+    <path d="M 320,484 Q 322,498 321,522 Q 320,540 322,550"
+          stroke="url(#dripPink)" stroke-width="7" fill="none" stroke-linecap="round" opacity="0.7"/>
+    <!-- Green drip far left -->
+    <path d="M 130,455 Q 128,468 129,490 Q 130,505 128,515 Q 127,522 129,520"
+          stroke="url(#dripGreen)" stroke-width="6" fill="none" stroke-linecap="round" opacity="0.6"/>
+    <!-- Cyan drip far right -->
+    <path d="M 390,468 Q 392,480 391,505 Q 390,520 392,530"
+          stroke="url(#dripCyan)" stroke-width="5" fill="none" stroke-linecap="round" opacity="0.55"/>
+    <!-- Thin pink drip -->
+    <path d="M 160,472 Q 159,482 160,498 Q 161,508 159,515"
+          stroke="url(#dripPink)" stroke-width="4" fill="none" stroke-linecap="round" opacity="0.5"/>
+    <!-- Thin green drip -->
+    <path d="M 355,482 Q 354,492 355,508"
+          stroke="url(#dripGreen)" stroke-width="3.5" fill="none" stroke-linecap="round" opacity="0.45"/>
+    <!-- Tiny drips on edges -->
+    <path d="M 85,418 Q 83,430 82,448 Q 81,456 83,462"
+          stroke="url(#dripCyan)" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.4"/>
+    <path d="M 420,440 Q 422,452 421,470 Q 420,480 422,488"
+          stroke="url(#dripPink)" stroke-width="3.5" fill="none" stroke-linecap="round" opacity="0.4"/>
+    <!-- Drip blobs (circles at drip tips) -->
+    <circle cx="251" cy="580" r="5" fill="#8338ec" opacity="0.5"/>
+    <circle cx="189" cy="558" r="4.5" fill="#00f5d4" opacity="0.5"/>
+    <circle cx="322" cy="550" r="4" fill="#ff006e" opacity="0.5"/>
+    <circle cx="129" cy="520" r="3.5" fill="#39ff14" opacity="0.45"/>
 
-    <!-- Drip 2: medium pink drip -->
-    <path d="M 310,486 Q 311,495 310,515 Q 309,528 311,535"
-          stroke="url(#dripGrad2)" stroke-width="4" fill="none" stroke-linecap="round" opacity="0.7"/>
-
-    <!-- Drip 3: short green drip -->
-    <path d="M 155,465 Q 154,472 155,490 Q 156,498 154,505"
-          stroke="url(#dripGrad3)" stroke-width="3.5" fill="none" stroke-linecap="round" opacity="0.65"/>
-
-    <!-- Drip 4: tiny cyan drip -->
-    <path d="M 350,480 Q 349,488 350,500"
-          stroke="url(#dripGrad)" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.5"/>
-
-    <!-- Drip 5: medium green drip left side -->
-    <path d="M 120,440 Q 119,450 118,468 Q 117,478 119,485"
-          stroke="url(#dripGrad3)" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.55"/>
-
-    <!-- === GLITCH BARS (horizontal displacement artifacts) === -->
-    <rect x="60" y="180" width="380" height="3" fill="#ff006e" opacity="0.15"/>
-    <rect x="100" y="182" width="280" height="1.5" fill="#00f5d4" opacity="0.2"/>
-    <rect x="45" y="340" width="420" height="2" fill="#39ff14" opacity="0.12"/>
-    <rect x="80" y="342" width="320" height="1" fill="#ff006e" opacity="0.18"/>
-
+    <!-- ===== GLITCH BARS ===== -->
+    <rect x="40" y="175" width="420" height="4" fill="#ff006e" opacity="0.18"/>
+    <rect x="80" y="178" width="300" height="2" fill="#00f5d4" opacity="0.22"/>
+    <rect x="30" y="335" width="450" height="3" fill="#39ff14" opacity="0.14"/>
+    <rect x="60" y="337" width="350" height="1.5" fill="#ff006e" opacity="0.2"/>
+    <rect x="20" y="115" width="220" height="2.5" fill="#ff006e" opacity="0.12"/>
+    <rect x="260" y="395" width="220" height="3" fill="#00f5d4" opacity="0.15"/>
+    <rect x="120" y="250" width="280" height="1.5" fill="#8338ec" opacity="0.1"/>
   </g>
+
+  <!-- ============================================ -->
+  <!-- FLOATING DECORATIONS                         -->
+  <!-- ============================================ -->
+
+  <!-- ===== CLAUDE MASCOT (terracotta orb + sparkle) ===== -->
+  <g transform="translate(435, 10)">
+    <circle cx="0" cy="0" r="34" fill="url(#claudeGrad)" stroke="#d4845a" stroke-width="2.5" filter="url(#neonGlow)"/>
+    <g transform="scale(2)" fill="#fff" opacity="0.9">
+      <use href="#claudeSpark"/>
+    </g>
+    <text x="0" y="52" font-family="'Comic Sans MS','Chalkboard SE',cursive" font-size="12" fill="#e8956a" text-anchor="middle" font-weight="bold" opacity="0.8">claude</text>
+  </g>
+
+  <!-- ===== CODEX LOGO (hexagon knot, bottom-left) ===== -->
+  <g transform="translate(35, 520)">
+    <g stroke="#00ff87" stroke-width="2.5" fill="none" opacity="0.7" filter="url(#sparkGlow)">
+      <path d="M 0,-20 L 17.3,-10 L 17.3,10 L 0,20 L -17.3,10 L -17.3,-10 Z"/>
+      <line x1="0" y1="-20" x2="0" y2="-7"/>
+      <line x1="17.3" y1="-10" x2="6" y2="-3.5"/>
+      <line x1="17.3" y1="10" x2="6" y2="3.5"/>
+      <line x1="0" y1="20" x2="0" y2="7"/>
+      <line x1="-17.3" y1="10" x2="-6" y2="3.5"/>
+      <line x1="-17.3" y1="-10" x2="-6" y2="-3.5"/>
+      <path d="M 0,-7 L 6,-3.5 L 6,3.5 L 0,7 L -6,3.5 L -6,-3.5 Z"/>
+    </g>
+    <text x="0" y="35" font-family="'Comic Sans MS','Chalkboard SE',cursive" font-size="11" fill="#00ff87" text-anchor="middle" font-weight="bold" opacity="0.7">codex</text>
+  </g>
+
+  <!-- ===== SPARKLES ===== -->
+  <g transform="translate(40, 18) scale(1.5)" fill="#ff006e" filter="url(#sparkGlow)" opacity="0.8">
+    <use href="#sparkle4"/>
+  </g>
+  <g transform="translate(510, 195) scale(1.2)" fill="#00f5d4" filter="url(#sparkGlow)" opacity="0.7">
+    <use href="#sparkle4"/>
+  </g>
+  <g transform="translate(490, 430) scale(1.0)" fill="#39ff14" filter="url(#sparkGlow)" opacity="0.6">
+    <use href="#sparkle4"/>
+  </g>
+  <g transform="translate(-15, 290) scale(0.9)" fill="#ff69b4" filter="url(#sparkGlow)" opacity="0.6">
+    <use href="#sparkle4"/>
+  </g>
+  <g transform="translate(395, 38) scale(0.7)" fill="#fff" filter="url(#sparkGlow)" opacity="0.65">
+    <use href="#sparkle4"/>
+  </g>
+  <g transform="translate(10, 155) scale(0.8)" fill="#ffe66d" filter="url(#sparkGlow)" opacity="0.5">
+    <use href="#sparkle4"/>
+  </g>
+  <g transform="translate(355, -35) scale(0.9)" fill="#00f5d4" filter="url(#sparkGlow)" opacity="0.55">
+    <use href="#sparkle4"/>
+  </g>
+  <g transform="translate(345, 555) scale(1.1)" fill="#39ff14" filter="url(#sparkGlow)" opacity="0.45">
+    <use href="#sparkle4"/>
+  </g>
+  <g transform="translate(105, 555) scale(0.8)" fill="#ff006e" filter="url(#sparkGlow)" opacity="0.4">
+    <use href="#sparkle4"/>
+  </g>
+  <g transform="translate(520, 310) scale(0.6)" fill="#8338ec" filter="url(#sparkGlow)" opacity="0.5">
+    <use href="#sparkle4"/>
+  </g>
+
+  <!-- ===== FLOATING TEXT ===== -->
+  <text x="500" y="345" font-family="'Comic Sans MS','Chalkboard SE',cursive" font-size="22" fill="#ff69b4" font-weight="bold" opacity="0.55" transform="rotate(-15, 500, 345)" filter="url(#sparkGlow)">uwu</text>
+  <text x="-18" y="440" font-family="'Comic Sans MS','Chalkboard SE',cursive" font-size="17" fill="#00f5d4" font-weight="bold" opacity="0.45" transform="rotate(10, -18, 440)" filter="url(#sparkGlow)">nya~</text>
+  <text x="455" y="125" font-family="'Comic Sans MS','Chalkboard SE',cursive" font-size="16" fill="#39ff14" font-weight="bold" opacity="0.45" transform="rotate(-8, 455, 125)">:3</text>
+  <text x="15" y="75" font-family="'Comic Sans MS','Chalkboard SE',cursive" font-size="13" fill="#ff006e" font-weight="bold" opacity="0.4" transform="rotate(5, 15, 75)">slop</text>
+  <text x="-25" y="175" font-family="'Comic Sans MS','Chalkboard SE',cursive" font-size="11" fill="#8338ec" font-weight="bold" opacity="0.35" transform="rotate(-3, -25, 175)">vibes</text>
+  <text x="500" y="520" font-family="'Comic Sans MS','Chalkboard SE',cursive" font-size="10" fill="#ffe66d" font-weight="bold" opacity="0.35" transform="rotate(7, 500, 520)">lmao</text>
+
+  <!-- ===== EMOJI DEBRIS ===== -->
+  <text x="520" y="268" font-size="18" opacity="0.4" transform="rotate(12, 520, 268)">&#x1F496;</text>
+  <text x="-25" y="215" font-size="15" opacity="0.35" transform="rotate(-8, -25, 215)">&#x2728;</text>
+  <text x="480" y="490" font-size="16" opacity="0.35">&#x1F4AB;</text>
+  <text x="95" y="-25" font-size="14" opacity="0.3">&#x2B50;</text>
+  <text x="-10" y="530" font-size="16" opacity="0.3">&#x1F380;</text>
+  <text x="200" y="-45" font-size="13" opacity="0.3" transform="rotate(5, 200, -45)">&#x1F525;</text>
+  <text x="530" y="400" font-size="12" opacity="0.25">&#x1F640;</text>
+
 </svg>
