@@ -1,16 +1,20 @@
 /* Measure monospace font metrics.
-   Uses the same styles as the rendering context (monospace 16px, line-height 1.2)
-   so the measured values match what the browser actually renders.  */
+   These values must match the canvas renderer and CSS frame.  */
 
 let cached = null;
+
+export const FONT_FAMILY = "'Menlo','SF Mono','Cascadia Code','Fira Code',"
+  + "'JetBrains Mono','Consolas','Liberation Mono',monospace";
+export const FONT_SIZE = 16;
+export const LINE_HEIGHT = 1.2;
 
 export function measureFont () {
   if (cached) return cached;
 
   const el = document.createElement('div');
-  el.style.fontFamily = 'monospace';
-  el.style.fontSize = '16px';
-  el.style.lineHeight = '1.2';
+  el.style.fontFamily = FONT_FAMILY;
+  el.style.fontSize = FONT_SIZE + 'px';
+  el.style.lineHeight = String(LINE_HEIGHT);
   el.style.position = 'absolute';
   el.style.visibility = 'hidden';
   el.style.whiteSpace = 'pre';
@@ -19,18 +23,20 @@ export function measureFont () {
   document.body.appendChild(el);
 
   const rect = el.getBoundingClientRect();
-  const charW = rect.width / 10;
-  const charH = rect.height;  /* already includes line-height: 1.2 */
+  const rawCharW = rect.width / 10;
+  const rawCharH = rect.height;  /* already includes line-height: 1.2 */
   document.body.removeChild(el);
 
-  const charWInt = Math.round(charW);
-  const charHInt = Math.round(charH);
+  const charWInt = Math.round(rawCharW);
+  const charHInt = Math.round(rawCharH);
 
   cached = {
-    charW,       /* fractional — for browser pixel positioning */
-    charH,       /* fractional — for browser pixel positioning */
-    charWInt,    /* integer — sent to Emacs in font_metrics */
-    charHInt,    /* integer — sent to Emacs in font_metrics */
+    charW: charWInt,
+    charH: charHInt,
+    rawCharW,
+    rawCharH,
+    charWInt,
+    charHInt,
     ascent: Math.round(charHInt * 2 / 3),
     descent: charHInt - Math.round(charHInt * 2 / 3),
   };

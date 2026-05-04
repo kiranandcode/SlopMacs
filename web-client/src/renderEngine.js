@@ -2,9 +2,8 @@
    The hot path mirrors Monaco's model: stable surface, rAF batching,
    cached glyphs, and direct painting outside React.  */
 
-const FONT_FAMILY = "'Menlo','SF Mono','Cascadia Code','Fira Code',"
-  + "'JetBrains Mono','Consolas','Liberation Mono',monospace";
-const FONT_SIZE = 16;
+import { FONT_FAMILY, FONT_SIZE } from './measure.js';
+
 const CURSOR_CLASS = ['cursor-box', 'cursor-hollow', 'cursor-bar', 'cursor-hbar'];
 
 function escapeHtml (s) {
@@ -284,19 +283,23 @@ export class FrameRenderer {
 
     const liveMenus = new Set();
     const liveCursors = new Set();
+    const visibleWidgets = new Set();
 
     for (const win of windows) {
       if (win.menuBar) {
         liveMenus.add(win.id);
         this.renderMenuBar(win);
       } else {
-        this.drawWindow(win, state, full);
+        this.drawWindow(win, state, full, visibleWidgets);
         if (win.cursor) {
           liveCursors.add(win.id);
           this.renderCursor(win);
         }
       }
     }
+
+    /* Hide widgets that are no longer visible in any window.  */
+    if (window._widgets) window._widgets.hideWidgetsExcept(visibleWidgets);
 
     for (const [id, rec] of this.menuBars) {
       if (liveMenus.has(id)) continue;
@@ -319,7 +322,7 @@ export class FrameRenderer {
     }
   }
 
-  drawWindow (win, state, full) {
+  drawWindow (win, state, full, visibleWidgets) {
     const m = this.metrics;
     const x = Math.round(win.x * m.charW);
     const y = Math.round(win.y * m.charH);
@@ -351,7 +354,7 @@ export class FrameRenderer {
       lineGens.set(row, lineGen);
     }
 
-    this.drawImages(win, state);
+    this.drawImages(win, state, visibleWidgets);
 
     ctx.fillStyle = 'rgba(255,255,255,0.06)';
     ctx.fillRect(x + w - 1, y, 1, h);
@@ -363,9 +366,15 @@ export class FrameRenderer {
     const ctx = this.ctx;
     const lineData = win.lines.get(row);
     const x = Math.round(win.x * m.charW);
-    const y = Math.round((win.y + row) * m.charH);
+    const rowY = lineData && Number.isFinite(lineData.pixel_y)
+      ? lineData.pixel_y
+      : row * m.charH;
+    const rowH = lineData && Number.isFinite(lineData.pixel_h)
+      ? lineData.pixel_h
+      : m.charH;
+    const y = Math.round(win.y * m.charH + rowY);
     const width = Math.ceil(win.w * m.charW);
-    const height = Math.ceil(m.charH);
+    const height = Math.ceil(rowH);
 
     const baseBg = lineData && lineData.mode_line && lineData.runs?.[0]
       ? state.getFace(lineData.runs[0].face_id).bg
@@ -434,14 +443,25 @@ export class FrameRenderer {
     }
   }
 
-  drawImages (win, state) {
+  drawImages (win, state, visibleWidgets) {
     const m = this.metrics;
     const ctx = this.ctx;
-    const x = Math.round(win.x * m.charW);
+    const winX = Math.round(win.x * m.charW);
+    const winY = Math.round(win.y * m.charH);
+    const widgets = window._widgets;
+
+    /* Compute the window content area (exclude modeline).  */
+    let contentH = win.h;
+    const lastLine = win.lines.get(win.h - 1);
+    if (lastLine && lastLine.mode_line) contentH--;
+    const winRight = winX + Math.ceil(win.w * m.charW);
+    const winBottom = winY + Math.ceil(contentH * m.charH);
 
     for (const [row, lineData] of win.lines) {
       if (row < 0 || row >= win.h || !lineData || !lineData.runs) continue;
-      const y = Math.round((win.y + row) * m.charH);
+      const rowY = Number.isFinite(lineData.pixel_y)
+        ? lineData.pixel_y : row * m.charH;
+      const y = Math.round(winY + rowY);
       let col = 0;
 
       for (const run of lineData.runs) {
@@ -449,15 +469,35 @@ export class FrameRenderer {
         const len = charsOf(text).length;
 
         if (run.img_id > 0) {
-          const imgData = state.images.get(run.img_id);
-          if (imgData && imgData.el.complete && !imgData.loading) {
-            ctx.drawImage(
-              imgData.el,
-              x + col * m.charW,
-              y,
-              run.img_w || imgData.w,
-              run.img_h || imgData.h
-            );
+          /* Check if this image is a widget placeholder.  */
+          const widgetId = state.widgetImages
+            && state.widgetImages.get(run.img_id);
+          if (widgetId && widgets) {
+            /* Position widget at full size but clip to window area.
+               Full dims are needed so D3 etc. can read correct
+               offsetWidth/offsetHeight during render.  */
+            const wx = winX + col * m.charW;
+            const wy = y;
+            const imgW = run.img_w || state.images.get(run.img_id)?.w || 0;
+            const imgH = run.img_h || state.images.get(run.img_id)?.h || 0;
+            const clipTop = Math.max(0, winY - wy);
+            const clipRight = Math.max(0, (wx + imgW) - winRight);
+            const clipBottom = Math.max(0, (wy + imgH) - winBottom);
+            const clipLeft = Math.max(0, winX - wx);
+            widgets.positionWidget(widgetId, wx, wy, imgW, imgH,
+              clipTop, clipRight, clipBottom, clipLeft);
+            visibleWidgets.add(widgetId);
+          } else {
+            const imgData = state.images.get(run.img_id);
+            if (imgData && imgData.el.complete && !imgData.loading) {
+              ctx.drawImage(
+                imgData.el,
+                winX + col * m.charW,
+                y,
+                run.img_w || imgData.w,
+                run.img_h || imgData.h
+              );
+            }
           }
         }
 
@@ -485,9 +525,13 @@ export class FrameRenderer {
     }
 
     node.className = 'emacs-cursor ' + cursorClass(cursor);
+    const lineData = win.lines.get(cursor.row);
+    const rowY = lineData && Number.isFinite(lineData.pixel_y)
+      ? lineData.pixel_y
+      : cursor.row * m.charH;
     node.style.transform = 'translate3d('
       + Math.round((win.x + cursor.col) * m.charW) + 'px,'
-      + Math.round((win.y + cursor.row) * m.charH) + 'px,0)';
+      + Math.round(win.y * m.charH + rowY) + 'px,0)';
     node.style.width = Math.ceil(m.charW) + 'px';
     node.style.height = Math.ceil(m.charH) + 'px';
   }

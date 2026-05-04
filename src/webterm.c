@@ -27,6 +27,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <fcntl.h>
 #include <errno.h>
 #include <time.h>
+#include <stdlib.h>
 
 #include "lisp.h"
 #include "blockinput.h"
@@ -280,6 +281,21 @@ json_get_line (struct json_window *jw, int row_index)
 }
 
 static int
+web_env_port (void)
+{
+  const char *value = getenv ("EMACS_WEB_PORT");
+  if (!value || !*value)
+    return 8080;
+
+  char *end = NULL;
+  long port = strtol (value, &end, 10);
+  if (end == value || *end != '\0' || port < 1 || port > 65535)
+    return 8080;
+
+  return (int) port;
+}
+
+static int
 web_glyph_row_index (struct window *w, struct glyph_row *row,
 		     int frame_y_fallback)
 {
@@ -493,6 +509,8 @@ web_build_row_content (struct window *w, struct glyph_row *row)
 
   /* Read the COMPLETE row from the glyph matrix.  */
   jl->nruns = 0;
+  jl->pixel_y = row->y;
+  jl->pixel_h = row->height > 0 ? row->height : FRAME_LINE_HEIGHT (f);
 
   int current_face = -1;
   struct json_run *run = NULL;
@@ -874,6 +892,8 @@ web_send_pending_images (struct frame *f, struct web_display_info *dpyinfo)
 	      const char *mime = web_image_mime (img);
 	      bool sent = false;
 
+
+
 	      /* Check if this is a browser-native format that we can
 		 send as raw file/data bytes.  */
 	      Lisp_Object img_type = image_spec_value (img->spec, QCtype,
@@ -1167,9 +1187,12 @@ web_flush_display (struct frame *f)
 		      first_line = false;
 
 		      web_write_printf (dpyinfo,
-					"{\"row\":%d,\"mode_line\":%s,"
+					"{\"row\":%d,\"pixel_y\":%d,"
+					"\"pixel_h\":%d,\"mode_line\":%s,"
 					"\"continued\":%s",
 					jl->row_index,
+					jl->pixel_y,
+					jl->pixel_h,
 					jl->mode_line_p ? "true" : "false",
 					jl->continued_p ? "true" : "false");
 
@@ -3194,7 +3217,7 @@ web_term_init (void)
   dpyinfo = xzalloc (sizeof *dpyinfo);
   dpyinfo->proxy_fd = -1;
   dpyinfo->proxy_pid = 0;
-  dpyinfo->port = 8080;
+  dpyinfo->port = web_env_port ();
   dpyinfo->n_planes = 24;
   dpyinfo->default_char_width = 10;
   dpyinfo->default_char_height = 20;

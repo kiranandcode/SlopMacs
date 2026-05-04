@@ -860,9 +860,48 @@ The font is base64-encoded and sent to the browser via the FontFace API.  */)
   return Qnil;
 }
 
+static void
+web_flush_control_message (struct web_display_info *dpyinfo)
+{
+#ifdef HAVE_PTHREAD
+  if (dpyinfo->async_enabled)
+    {
+      web_async_enqueue_output (&dpyinfo->async,
+				dpyinfo->write_buf, dpyinfo->write_buf_len);
+      dpyinfo->write_buf_len = 0;
+      web_frame_output_wake (&dpyinfo->async);
+    }
+  else
+#endif
+    web_write_flush (dpyinfo);
+}
+
+DEFUN ("web-eval-javascript", Fweb_eval_javascript, Sweb_eval_javascript,
+       1, 1, 0,
+       doc: /* Evaluate CODE in the web display browser.
+CODE is sent to the browser process and evaluated there.  This is a
+one-way display primitive; use it for browser widgets and diagnostics.  */)
+  (Lisp_Object code)
+{
+  CHECK_STRING (code);
+
+  struct web_display_info *dpyinfo = x_display_list;
+  if (!dpyinfo)
+    error ("Web display not initialized");
+
+  Lisp_Object encoded = ENCODE_UTF_8 (code);
+  WR_LIT (dpyinfo, "{\"type\":\"eval\",\"code\":");
+  web_write_json_string (dpyinfo, SSDATA (encoded), (int) SBYTES (encoded));
+  WR_LIT (dpyinfo, "}\n");
+  web_flush_control_message (dpyinfo);
+
+  return Qnil;
+}
+
 void
 syms_of_webfns (void)
 {
+  defsubr (&Sweb_eval_javascript);
   defsubr (&Sweb_load_font);
   defsubr (&Sxw_color_defined_p);
   defsubr (&Sxw_color_values);

@@ -7,6 +7,7 @@ import { InputHandler } from './input.js';
 import { measureFont } from './measure.js';
 import Frame from './components/Frame.jsx';
 import Menu from './components/Menu.jsx';
+import './widgets.js';
 
 const state = new FrameState();
 window._state = state;
@@ -209,7 +210,8 @@ export default function App () {
       {showLoading && (
         <div className={'loading-screen' + (connStatus === 'connected' && state.hasFirstFrame ? ' fading' : '')}>
           <div className="loading-content">
-            <div className="loading-logo">GNU Emacs</div>
+            <img src="./emacs-slop.svg" alt="" className="loading-icon" />
+            <div className="loading-logo">Slopmacs</div>
             <div className="loading-bar"><div className="loading-bar-fill" /></div>
             <div className="loading-status">
               {connStatus === 'disconnected' ? 'Waiting for Emacs...'

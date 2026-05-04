@@ -6,6 +6,7 @@ export class FrameState {
     this.faces = new Map();
     this.windows = new Map();
     this.images = new Map();
+    this.widgetImages = new Map(); /* img_id → widget-id */
     this.defaultFg = '#d4d4d4';
     this.defaultBg = '#1e1e1e';
     this.cols = 80;
@@ -59,6 +60,16 @@ export class FrameState {
         break;
       }
       case 'image_data': {
+        /* Detect widget placeholder SVGs: they contain data-widget="ID".  */
+        if (msg.mime === 'image/svg+xml' || msg.mime === 'image/svg') {
+          try {
+            const svgText = atob(msg.data);
+            const match = svgText.match(/data-widget="([^"]+)"/);
+            if (match) {
+              this.widgetImages.set(msg.id, match[1]);
+            }
+          } catch (e) { /* ignore decode errors */ }
+        }
         const img = new Image();
         this.images.set(msg.id, {
           el: img,
@@ -215,7 +226,11 @@ export class FrameState {
 
     for (const [newRow, line] of moved) {
       if (newRow >= 0 && newRow < old.h) {
-        lines.set(newRow, { ...line, row: newRow, gen });
+        /* Clear stale pixel_y/pixel_h so drawLine falls back to
+           grid positioning (row * charH) until the next frame_update
+           from Emacs provides correct pixel coordinates.  */
+        const { pixel_y, pixel_h, ...rest } = line;
+        lines.set(newRow, { ...rest, row: newRow, gen });
       }
     }
 

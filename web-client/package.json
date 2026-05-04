@@ -3,10 +3,13 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "electron": "npm run build && electron .",
+    "dist:mac": "npm run build && electron-builder --mac dir"
   },
   "dependencies": {
     "react": "^19.2.5",
@@ -14,6 +17,45 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^6.0.1",
+    "electron": "^39.2.6",
+    "electron-builder": "^26.0.12",
     "vite": "^8.0.10"
+  },
+  "build": {
+    "appId": "dev.emacsslop.app",
+    "productName": "EmacsSlop",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "..",
+        "to": "emacs-root",
+        "filter": [
+          "src/emacs",
+          "src/emacs.pdmp",
+          "web-display/emacs-web-display",
+          "lisp/**",
+          "leim/**",
+          "etc/**",
+          "info/**",
+          "lib-src/**",
+          "native-lisp/**"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "electron/icon.png",
+      "target": [
+        "dir"
+      ]
+    }
   }
 }

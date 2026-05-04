@@ -170,6 +170,7 @@ struct web_display_info
       int x, y, w, h;          /* char-cell units */
       struct json_line {
         int row_index;
+        int pixel_y, pixel_h;  /* window-relative pixel geometry */
         bool mode_line_p, continued_p, truncated_left_p, truncated_right_p;
         bool complete;   /* Set by after_update_window_line.  */
         struct json_run {

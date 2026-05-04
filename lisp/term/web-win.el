@@ -37,6 +37,11 @@
 
 (add-to-list 'display-format-alist '(".*" . web))
 
+;; Disable JIT native compilation in the web backend.
+;; The toolchain (gcc, as, ld) may not be on PATH when Emacs is spawned
+;; from an Electron app bundle.  Pre-compiled .eln files still work.
+(setq native-comp-jit-compilation nil)
+
 ;;;; Command line argument handling.
 
 (defvar x-invocation-args)
@@ -119,6 +124,21 @@ DISPLAY may be set to the name of a display that will be initialized."
                     (error nil)))))))))))
 
 (add-hook 'after-init-hook #'web--load-icon-fonts)
+
+;;;; JavaScript widgets.
+
+(defun web-insert-javascript-widget (code &optional fallback)
+  "Insert FALLBACK or CODE, and evaluate CODE in web displays.
+Vanilla Emacs sees ordinary buffer text.  The web backend also receives
+CODE through `web-eval-javascript'."
+  (insert (or fallback code))
+  (when (and (fboundp 'web-eval-javascript)
+             (display-graphic-p))
+    (web-eval-javascript code)))
+
+;; Load web-widgets (skip during dump when noninteractive).
+(unless noninteractive
+  (require 'web-widgets))
 
 (provide 'web-win)
 
