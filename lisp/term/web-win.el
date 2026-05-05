@@ -42,6 +42,22 @@
 ;; from an Electron app bundle.  Pre-compiled .eln files still work.
 (setq native-comp-jit-compilation nil)
 
+;; Use text/symbol icons instead of images.  The web backend renders
+;; images by sending pixel data to the browser, which works but makes
+;; the image cache extremely expensive for mode-line icons (tab-bar
+;; close buttons, etc.).  SVG icon lookup causes O(n^2) cache scans.
+(setq icon-preference '(symbol text))
+
+;; Shorten image cache eviction to prevent unbounded growth.
+;; Face changes (custom-set-faces) create stale image cache entries
+;; with old face parameters.  Short eviction keeps bucket chains small.
+(setq image-cache-eviction-delay 30)
+
+;; Raise GC threshold to avoid frequent garbage collection during
+;; complex mode-line evaluation (doom-modeline, all-the-icons, etc.).
+;; Default 800KB is too low for web display with rich mode lines.
+(setq gc-cons-threshold (* 50 1024 1024))
+
 ;;;; Command line argument handling.
 
 (defvar x-invocation-args)
@@ -67,6 +83,10 @@ DISPLAY may be set to the name of a display that will be initialized."
           (lambda ()
             (when (fboundp 'web--start-redisplay-timer)
               (web--start-redisplay-timer))
+            ;; Disable cursor blinking to avoid expensive repeated
+            ;; redisplay.  Each blink tick triggers redisplay_tab_bar
+            ;; which runs full BiDi resolution on the tab bar string.
+            (blink-cursor-mode -1)
             ;; Ensure *scratch* has initial-scratch-message.
             ;; This is normally done by command-line-1 in startup.el, but
             ;; that code may not run when the web backend auto-detects

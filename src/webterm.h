@@ -46,6 +46,7 @@ struct web_bitmap_record
 #define WEB_MAX_RUNS 32
 #define WEB_MAX_FACES 512
 #define WEB_MAX_SCROLLS 64
+#define WEB_MAX_CLEAR_AREAS 64
 #define WEB_RUN_TEXT_CAP 1024
 
 /* Information about the web display we are connected to.  */
@@ -203,6 +204,12 @@ struct web_display_info
       int nrows;
     } scrolls[WEB_MAX_SCROLLS];
     int nscrolls;
+
+    struct {
+      int x, y, width, height;
+      unsigned long bg;
+    } clear_areas[WEB_MAX_CLEAR_AREAS];
+    int nclear_areas;
 
     bool clear_pending;
     unsigned long clear_bg;

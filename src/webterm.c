@@ -257,9 +257,14 @@ json_get_window (struct json_frame_state *js, EMACS_INT id)
     return NULL;
 
   struct json_window *jw = &js->windows[js->nwindows++];
-  memset (jw, 0, sizeof *jw);
+  /* Only zero the counters and metadata — not the multi-MB lines[]
+     array.  Line data is overwritten by json_get_line as needed.  */
   jw->id = id;
+  jw->nlines = 0;
+  jw->has_cursor = false;
   jw->active = true;
+  jw->has_complete_lines = false;
+  jw->is_menu_bar = false;
   return jw;
 }
 
@@ -275,8 +280,17 @@ json_get_line (struct json_window *jw, int row_index)
     return NULL;
 
   struct json_line *jl = &jw->lines[jw->nlines++];
-  memset (jl, 0, sizeof *jl);
+  /* Only zero counters — not the multi-KB runs[] array.
+     Run data is filled incrementally by glyph rendering.  */
   jl->row_index = row_index;
+  jl->pixel_y = 0;
+  jl->pixel_h = 0;
+  jl->mode_line_p = false;
+  jl->continued_p = false;
+  jl->truncated_left_p = false;
+  jl->truncated_right_p = false;
+  jl->complete = false;
+  jl->nruns = 0;
   return jl;
 }
 
@@ -390,6 +404,7 @@ json_state_reset (struct json_frame_state *js)
   js->nwindows = 0;
   js->nface_ids = 0;
   js->nscrolls = 0;
+  js->nclear_areas = 0;
   js->clear_pending = false;
   js->clear_bg = 0;
   js->current_window = NULL;
@@ -1011,13 +1026,22 @@ web_flush_display (struct frame *f)
 #endif
 
   /* Skip empty flushes — nothing changed, don't waste bandwidth.  */
-  bool has_data = js->clear_pending || js->nscrolls > 0;
-  if (!has_data)
-    {
-      for (int i = 0; i < js->nwindows; i++)
-	if (js->windows[i].has_complete_lines || js->windows[i].has_cursor)
-	  { has_data = true; break; }
-    }
+  bool has_window_data = false;
+  for (int i = 0; i < js->nwindows; i++)
+    if (js->windows[i].has_complete_lines || js->windows[i].has_cursor)
+      { has_window_data = true; break; }
+
+  bool has_data = has_window_data || js->nscrolls > 0
+    || js->nclear_areas > 0 || js->nface_ids > 0;
+
+  /* If the only pending action is clear_frame but there's no window
+     data yet, defer the clear.  This happens when flush_display is
+     called from intermediate redisplay code before windows are drawn.
+     Keep clear_pending set so the next flush (from update_end) will
+     emit both clear_frame and the window data together.  */
+  if (!has_data && js->clear_pending)
+    return;   /* Preserve clear_pending for next flush.  */
+
   if (!has_data)
     {
       json_state_reset (js);
@@ -1050,12 +1074,31 @@ web_flush_display (struct frame *f)
 		      js->scrolls[i].desired_row,
 		      js->scrolls[i].nrows);
 
-  /* 2b. Send image data for any new images before the frame_update
+  /* 2b. Rectangle clears.  These cover redisplay paths such as folding
+     that clear a window area without replacing every row.  */
+  if (!js->clear_pending)
+    for (int i = 0; i < js->nclear_areas; i++)
+      {
+	char bg[8];
+	color_to_hex (js->clear_areas[i].bg, bg);
+	web_write_printf (dpyinfo,
+			  "{\"type\":\"clear_area\",\"x\":%d,\"y\":%d,"
+			  "\"w\":%d,\"h\":%d,\"bg\":\"%s\"}\n",
+			  js->clear_areas[i].x,
+			  js->clear_areas[i].y,
+			  js->clear_areas[i].width,
+			  js->clear_areas[i].height,
+			  bg);
+      }
+
+  /* 2c. Send image data for any new images before the frame_update
      that references them.  */
   web_send_pending_images (f, dpyinfo);
 
-  /* 3. Build frame_update JSON if we have any data.  */
-  if (js->nwindows > 0 || js->nface_ids > 0)
+  /* 3. Build frame_update JSON if we have any data.  Always send
+     when clear_pending so the browser gets the all_windows list
+     to know which windows should exist after the clear.  */
+  if (js->nwindows > 0 || js->nface_ids > 0 || js->clear_pending)
     {
       {
 	struct timespec _ts = current_timespec ();
@@ -1243,11 +1286,35 @@ web_flush_display (struct frame *f)
 	}
 
       /* 3c. List of all live window IDs so the browser can
-	 prune windows that were deleted.  */
+	 prune windows that were deleted.  Include special frame
+	 windows (menu bar, tab bar, tool bar) that live outside
+	 the root window tree.  */
       if (f)
 	{
 	  EMACS_INT live_ids[32];
 	  int nlive = 0;
+
+	  /* Include the menu bar, tab bar, and tool bar windows
+	     if they exist and are active.  */
+	  if (WINDOWP (f->menu_bar_window))
+	    {
+	      struct window *mbw = XWINDOW (f->menu_bar_window);
+	      if (WINDOW_TOTAL_LINES (mbw) > 0 && nlive < 32)
+		live_ids[nlive++] = mbw->sequence_number;
+	    }
+	  if (WINDOWP (f->tab_bar_window))
+	    {
+	      struct window *tbw = XWINDOW (f->tab_bar_window);
+	      if (WINDOW_TOTAL_LINES (tbw) > 0 && nlive < 32)
+		live_ids[nlive++] = tbw->sequence_number;
+	    }
+	  if (WINDOWP (f->tool_bar_window))
+	    {
+	      struct window *tlw = XWINDOW (f->tool_bar_window);
+	      if (WINDOW_TOTAL_LINES (tlw) > 0 && nlive < 32)
+		live_ids[nlive++] = tlw->sequence_number;
+	    }
+
 	  web_collect_live_windows (f->root_window,
 				   live_ids, &nlive, 32);
 	  WR_LIT (dpyinfo, ",\"all_windows\":[");
@@ -1318,8 +1385,21 @@ static void
 web_clear_frame_area (struct frame *f, int x, int y,
 		      int width, int height)
 {
-  /* In JSON mode, clearing is done implicitly — browser renders
-     empty lines with default background.  No-op here.  */
+  struct web_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
+  struct json_frame_state *js = &dpyinfo->json_state;
+
+  if (width <= 0 || height <= 0 || js->clear_pending)
+    return;
+
+  if (js->nclear_areas < WEB_MAX_CLEAR_AREAS)
+    {
+      int i = js->nclear_areas++;
+      js->clear_areas[i].x = x;
+      js->clear_areas[i].y = y;
+      js->clear_areas[i].width = width;
+      js->clear_areas[i].height = height;
+      js->clear_areas[i].bg = FRAME_BACKGROUND_COLOR (f);
+    }
 }
 
 static void
@@ -3351,6 +3431,17 @@ Should be called after init completes and a frame exists.  */)
 {
   if (!web_frame_ready)
     return Qnil;
+
+#ifdef HAVE_PTHREAD
+  /* In async mode the I/O thread handles heartbeats independently
+     via WEB_HEARTBEAT_MS.  Do NOT start a SIGALRM timer here —
+     the alarm fires during every long redisplay call (e.g. complex
+     doom-modeline evaluation), which sets pending_signals, which
+     makes detect_input_pending_run_timers return true, which causes
+     read_char to loop back to redisplay in an infinite cycle.  */
+  if (web_display_info && web_display_info->async_enabled)
+    return Qt;
+#endif
 
   /* 5Hz heartbeat — the SIGALRM also triggers gobble_input via
      the pending_signals mechanism, so input is polled at this rate

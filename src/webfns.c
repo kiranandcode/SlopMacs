@@ -179,7 +179,18 @@ web_change_tab_bar_height (struct frame *f, int height)
     adjust_frame_size (f, -1, -1, 3, false, Qtab_bar_lines);
 
   adjust_frame_glyphs (f);
-  SET_FRAME_GARBAGED (f);
+
+  /* Do NOT call SET_FRAME_GARBAGED here.  On the web backend, a
+     garbaged frame triggers redisplay_internal to clear glyph matrices
+     via adjust_frame_glyphs with fonts_changed=true.  This loses the
+     cached mode-line height, causing estimate_mode_line_height to
+     return a value that differs from the actual rendered height (e.g.
+     when doom-modeline uses :height 1.1 faces).  The mismatch sets
+     fonts_changed again, creating an infinite redisplay retry loop.
+
+     Using fset_redisplay instead triggers a thorough redisplay without
+     clearing matrices, which avoids the estimate/actual oscillation.  */
+  fset_redisplay (f);
 }
 
 static void

@@ -15026,6 +15026,9 @@ redisplay_tab_bar (struct frame *f)
       if (new_nrows != f->n_tab_bar_rows)
 	f->n_tab_bar_rows = new_nrows;
       clear_glyph_matrix (w->desired_matrix);
+      /* This is the initial resize (e.g. tab bar going from 0
+	 to 1+ rows).  Set fonts_changed so redisplay_internal
+	 retries with the new frame layout.  */
       f->fonts_changed = true;
       return true;
     }
@@ -15133,14 +15136,19 @@ redisplay_tab_bar (struct frame *f)
 
 	  if (change_height_p)
 	    {
-              if (FRAME_TERMINAL (f)->change_tab_bar_height_hook)
-                FRAME_TERMINAL (f)->change_tab_bar_height_hook (f, new_height);
+	      if (FRAME_TERMINAL (f)->change_tab_bar_height_hook)
+		FRAME_TERMINAL (f)->change_tab_bar_height_hook (f, new_height);
 	      frame_default_tab_bar_height = new_height;
-	      clear_glyph_matrix (w->desired_matrix);
 	      f->n_tab_bar_rows = nrows;
-	      f->fonts_changed = true;
-
-	      return true;
+	      /* Don't clear the desired matrix or set fonts_changed.
+		 The tab bar is already rendered by the loop above —
+		 a slightly imprecise height is better than losing the
+		 content.  Setting fonts_changed would trigger an
+		 expensive retry loop in redisplay_internal when font
+		 metrics cause the height to oscillate (web backend).
+		 The hook already called adjust_frame_glyphs and
+		 fset_redisplay so the next redisplay cycle will use
+		 the corrected height.  */
 	    }
 	}
     }
@@ -17821,6 +17829,7 @@ redisplay_internal (void)
 		tty_root_frames = Fcons (frame, tty_root_frames);
 	    }
 
+	  int frame_retries = 0;
 	retry_frame:
 	  if (FRAME_WINDOW_P (f) || is_tty_frame (f) || f == sf)
 	    {
@@ -17873,13 +17882,21 @@ redisplay_internal (void)
 		  /* If fonts changed on visible frame, display again.  */
 		  if (f->fonts_changed)
 		    {
+		      /* Clear fonts_changed BEFORE adjust_frame_glyphs so
+			 that adjust_glyph_matrix can use its early-return
+			 optimization when window geometry hasn't changed.
+			 This preserves cached mode-line heights in current
+			 matrices, preventing an infinite retry loop where
+			 estimate_mode_line_height disagrees with the actual
+			 rendered height (e.g. due to :height 1.1 faces).  */
+		      f->fonts_changed = false;
 		      adjust_frame_glyphs (f);
 		      /* Disable all redisplay optimizations for this
 			 frame.  For the reasons, see the comment near
 			 the previous call to adjust_frame_glyphs above.  */
 		      SET_FRAME_GARBAGED (f);
-		      f->fonts_changed = false;
-		      goto retry_frame;
+		      if (++frame_retries <= 6)
+			goto retry_frame;
 		    }
 
 		  /* See if we have to hscroll.  */
@@ -21396,14 +21413,16 @@ redisplay_window (Lisp_Object window, bool just_this_one_p)
 
       /* If mode line height has changed, arrange for a thorough
 	 immediate redisplay using the correct mode line height.  */
-      if (window_wants_mode_line (w)
-	  && CURRENT_MODE_LINE_HEIGHT (w) != DESIRED_MODE_LINE_HEIGHT (w))
-	{
-	  f->fonts_changed = true;
-	  w->mode_line_height = -1;
-	  MATRIX_MODE_LINE_ROW (w->current_matrix)->height
-	    = DESIRED_MODE_LINE_HEIGHT (w);
-	}
+      {
+	int cur_mlh = CURRENT_MODE_LINE_HEIGHT (w);
+	int des_mlh = DESIRED_MODE_LINE_HEIGHT (w);
+	if (window_wants_mode_line (w) && cur_mlh != des_mlh)
+	  {
+	    f->fonts_changed = true;
+	    w->mode_line_height = des_mlh;
+	    MATRIX_MODE_LINE_ROW (w->current_matrix)->height = des_mlh;
+	  }
+      }
 
       /* If tab line height has changed, arrange for a thorough
 	 immediate redisplay using the correct tab line height.  */
@@ -21411,7 +21430,7 @@ redisplay_window (Lisp_Object window, bool just_this_one_p)
 	  && CURRENT_TAB_LINE_HEIGHT (w) != DESIRED_TAB_LINE_HEIGHT (w))
 	{
 	  f->fonts_changed = true;
-	  w->tab_line_height = -1;
+	  w->tab_line_height = DESIRED_TAB_LINE_HEIGHT (w);
 	  MATRIX_TAB_LINE_ROW (w->current_matrix)->height
 	    = DESIRED_TAB_LINE_HEIGHT (w);
 	}
@@ -21422,7 +21441,7 @@ redisplay_window (Lisp_Object window, bool just_this_one_p)
 	  && CURRENT_HEADER_LINE_HEIGHT (w) != DESIRED_HEADER_LINE_HEIGHT (w))
 	{
 	  f->fonts_changed = true;
-	  w->header_line_height = -1;
+	  w->header_line_height = DESIRED_HEADER_LINE_HEIGHT (w);
 	  MATRIX_HEADER_LINE_ROW (w->current_matrix)->height
 	    = DESIRED_HEADER_LINE_HEIGHT (w);
 	}
