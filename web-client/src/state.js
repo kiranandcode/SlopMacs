@@ -1,5 +1,6 @@
-/* Frame state manager for Emacs web display.
-   Uses immutable window/line objects so React.memo can detect changes.  */
+/* Frame state manager for Emacs web display.  */
+
+import { measureFont } from './measure.js';
 
 export class FrameState {
   constructor () {
@@ -17,6 +18,8 @@ export class FrameState {
     this.activeMenu = null;
     this.hasFirstFrame = false;
     this.pendingScrolls = [];
+    this.pendingClears = [];
+    this._clearPending = false;
   }
 
   onChange (fn) {
@@ -41,6 +44,9 @@ export class FrameState {
         break;
       case 'clear_frame':
         this._applyClear(msg);
+        break;
+      case 'clear_area':
+        this._applyClearArea(msg);
         break;
       case 'frame_size':
         this._applyFrameSize(msg);
@@ -176,6 +182,10 @@ export class FrameState {
           y: wdata.y ?? (old ? old.y : 0),
           w: wdata.w ?? (old ? old.w : 80),
           h: newH,
+          px: wdata.px ?? (old ? old.px : undefined),
+          py: wdata.py ?? (old ? old.py : undefined),
+          pw: wdata.pw ?? (old ? old.pw : undefined),
+          ph: wdata.ph ?? (old ? old.ph : undefined),
           lines,
           cursor,
           cursorGen,
@@ -226,11 +236,14 @@ export class FrameState {
 
     for (const [newRow, line] of moved) {
       if (newRow >= 0 && newRow < old.h) {
-        /* Clear stale pixel_y/pixel_h so drawLine falls back to
-           grid positioning (row * charH) until the next frame_update
-           from Emacs provides correct pixel coordinates.  */
-        const { pixel_y, pixel_h, ...rest } = line;
-        lines.set(newRow, { ...rest, row: newRow, gen });
+        /* Drop pixel_y/pixel_h — the frame_update that follows in
+           the same flush batch will provide correct values.  Using
+           stale pixel_y after a scroll causes misalignment when
+           Emacs pixel units differ slightly from browser charH.  */
+        const movedLine = { ...line, row: newRow, gen };
+        delete movedLine.pixel_y;
+        delete movedLine.pixel_h;
+        lines.set(newRow, movedLine);
       }
     }
 
@@ -257,11 +270,75 @@ export class FrameState {
     this._notify(false);
   }
 
+  _applyClearArea (msg) {
+    const gen = ++this._gen;
+    const metrics = measureFont();
+    const clear = {
+      x: msg.x || 0,
+      y: msg.y || 0,
+      w: Math.max(0, msg.w || 0),
+      h: Math.max(0, msg.h || 0),
+      bg: msg.bg || this.defaultBg,
+    };
+
+    if (clear.w <= 0 || clear.h <= 0) return;
+
+    this.pendingClears.push(clear);
+
+    const clearRight = clear.x + clear.w;
+    const clearBottom = clear.y + clear.h;
+    for (const [id, old] of this.windows) {
+      const winX = old.px !== undefined ? old.px : Math.round(old.x * metrics.charW);
+      const winY = old.py !== undefined ? old.py : Math.round(old.y * metrics.charH);
+      const winW = old.pw !== undefined ? old.pw : Math.ceil(old.w * metrics.charW);
+      const winH = old.ph !== undefined ? old.ph : Math.ceil(old.h * metrics.charH);
+      const ix0 = Math.max(clear.x, winX);
+      const iy0 = Math.max(clear.y, winY);
+      const ix1 = Math.min(clearRight, winX + winW);
+      const iy1 = Math.min(clearBottom, winY + winH);
+      if (ix0 >= ix1 || iy0 >= iy1) continue;
+
+      const fullRowClear = (ix1 - ix0) >= Math.max(metrics.charW, winW * 0.5);
+      if (!fullRowClear) continue;
+
+      const lines = new Map(old.lines);
+      let changed = false;
+      for (const [row, line] of old.lines) {
+        const rowY = line && line.mode_line
+          ? (old.h - 1) * metrics.charH
+          : Number.isFinite(line?.pixel_y)
+            ? line.pixel_y
+            : row * metrics.charH;
+        const lineTop = winY + rowY;
+        /* Only delete lines whose top edge starts inside the clear
+           area.  This removes genuinely vacated rows (e.g. bottom of
+           window after scroll-up) while preserving heading lines that
+           merely touch the clear area at their bottom boundary.  */
+        if (lineTop >= iy0 && lineTop < iy1) {
+          lines.delete(row);
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        this.windows.set(id, { ...old, lines, gen });
+      }
+    }
+
+    this._notify(false);
+  }
+
   _applyClear (msg) {
     if (msg.bg) {
       this.defaultBg = msg.bg;
     }
+    /* Clear all windows.  The C side guarantees clear_frame is only
+       sent when a frame_update with window data follows in the same
+       flush batch, so windows will be repopulated immediately.  */
     this.windows.clear();
+    this.pendingClears.length = 0;
+    this.pendingScrolls.length = 0;
+    this._clearPending = false;
     this._gen++;
     this._notify(false);
   }

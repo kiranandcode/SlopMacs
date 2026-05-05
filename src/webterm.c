@@ -460,6 +460,10 @@ web_update_window_begin (struct window *w)
   jw->y = WINDOW_TOP_EDGE_LINE (w);
   jw->w = WINDOW_TOTAL_COLS (w);
   jw->h = WINDOW_TOTAL_LINES (w);
+  jw->px = WINDOW_LEFT_EDGE_X (w);
+  jw->py = WINDOW_TOP_EDGE_Y (w);
+  jw->pw = WINDOW_PIXEL_WIDTH (w);
+  jw->ph = WINDOW_PIXEL_HEIGHT (w);
   jw->active = true;
   jw->is_menu_bar = WINDOW_MENU_BAR_P (w);
 
@@ -1208,9 +1212,13 @@ web_flush_display (struct frame *f)
 
 	      web_write_printf (dpyinfo,
 				"{\"id\":%ld,\"x\":%d,\"y\":%d,"
-				"\"w\":%d,\"h\":%d",
+				"\"w\":%d,\"h\":%d,"
+				"\"px\":%d,\"py\":%d,"
+				"\"pw\":%d,\"ph\":%d",
 				(long)jw->id, jw->x, jw->y,
-				jw->w, jw->h);
+				jw->w, jw->h,
+				jw->px, jw->py,
+				jw->pw, jw->ph);
 
 	      if (jw->is_menu_bar)
 		WR_LIT (dpyinfo, ",\"menu_bar\":true");

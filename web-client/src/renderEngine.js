@@ -255,7 +255,8 @@ export class FrameRenderer {
     });
     let layoutKey = '';
     for (const w of windows)
-      layoutKey += w.id + ',' + w.x + ',' + w.y + ',' + w.w + ',' + w.h + ';';
+      layoutKey += w.id + ',' + w.x + ',' + w.y + ',' + w.w + ',' + w.h
+        + ',' + (w.px || 0) + ',' + (w.py || 0) + ',' + (w.pw || 0) + ',' + (w.ph || 0) + ';';
     if (layoutKey !== this.layoutKey) {
       this.layoutKey = layoutKey;
       this.fullRepaint = true;
@@ -279,6 +280,9 @@ export class FrameRenderer {
       ctx.fillRect(0, 0, this.width, this.height);
       this.renderedLineGens.clear();
       this.renderedCursorGens.clear();
+      state.pendingClears.length = 0;
+    } else if (state.pendingClears.length > 0) {
+      this.applyClearAreas(state);
     }
 
     const liveMenus = new Set();
@@ -324,10 +328,12 @@ export class FrameRenderer {
 
   drawWindow (win, state, full, visibleWidgets) {
     const m = this.metrics;
-    const x = Math.round(win.x * m.charW);
-    const y = Math.round(win.y * m.charH);
-    const w = Math.ceil(win.w * m.charW);
-    const h = Math.ceil(win.h * m.charH);
+    /* Use Emacs pixel coordinates when available for accurate
+       positioning (e.g. tab bar with non-standard height).  */
+    const x = win.px !== undefined ? win.px : Math.round(win.x * m.charW);
+    const y = win.py !== undefined ? win.py : Math.round(win.y * m.charH);
+    const w = win.pw !== undefined ? win.pw : Math.ceil(win.w * m.charW);
+    const h = win.ph !== undefined ? win.ph : Math.ceil(win.h * m.charH);
     const ctx = this.ctx;
 
     /* Get or create per-window line generation map.  */
@@ -357,24 +363,78 @@ export class FrameRenderer {
     this.drawImages(win, state, visibleWidgets);
 
     ctx.fillStyle = 'rgba(255,255,255,0.06)';
-    ctx.fillRect(x + w - 1, y, 1, h);
+    ctx.fillRect(x + w - 1, y, 1, win.ph || h);
     ctx.restore();
+  }
+
+  applyClearAreas (state) {
+    const m = this.metrics;
+    const ctx = this.ctx;
+    for (const clear of state.pendingClears) {
+      ctx.fillStyle = clear.bg || state.defaultBg;
+      ctx.fillRect(clear.x, clear.y, clear.w, clear.h);
+
+      const clearRight = clear.x + clear.w;
+      const clearBottom = clear.y + clear.h;
+      for (const win of state.windows.values()) {
+        const winX = win.px !== undefined ? win.px : Math.round(win.x * m.charW);
+        const winY = win.py !== undefined ? win.py : Math.round(win.y * m.charH);
+        const winW = win.pw !== undefined ? win.pw : Math.ceil(win.w * m.charW);
+        const winH = win.ph !== undefined ? win.ph : Math.ceil(win.h * m.charH);
+        const ix0 = Math.max(clear.x, winX);
+        const iy0 = Math.max(clear.y, winY);
+        const ix1 = Math.min(clearRight, winX + winW);
+        const iy1 = Math.min(clearBottom, winY + winH);
+        if (ix0 >= ix1 || iy0 >= iy1) continue;
+
+        const lineGens = this.renderedLineGens.get(win.id);
+        if (lineGens) {
+          const first = Math.max(0, Math.floor((iy0 - winY) / m.charH) - 1);
+          const last = Math.min(win.h - 1,
+            Math.ceil((iy1 - winY) / m.charH) + 1);
+          for (let row = first; row <= last; row++) lineGens.delete(row);
+        }
+        this.renderedCursorGens.delete(win.id);
+      }
+    }
+    state.pendingClears.length = 0;
+  }
+
+  lineGeometry (win, row, lineData) {
+    const m = this.metrics;
+    const winX = win.px !== undefined ? win.px : Math.round(win.x * m.charW);
+    const winY = win.py !== undefined ? win.py : Math.round(win.y * m.charH);
+    const width = win.pw !== undefined ? win.pw : Math.ceil(win.w * m.charW);
+    let rowY;
+    let rowH;
+
+    if (lineData && lineData.mode_line) {
+      const winH = win.ph !== undefined ? win.ph : win.h * m.charH;
+      rowY = winH - m.charH;
+      rowH = m.charH;
+    } else {
+      rowY = lineData && Number.isFinite(lineData.pixel_y)
+        ? lineData.pixel_y
+        : row * m.charH;
+      rowH = lineData && Number.isFinite(lineData.pixel_h)
+        ? lineData.pixel_h
+        : m.charH;
+    }
+
+    return {
+      x: winX,
+      y: winY + rowY,
+      width,
+      height: Math.ceil(Math.max(rowH, m.charH)),
+      rowY,
+    };
   }
 
   drawLine (win, row, state) {
     const m = this.metrics;
     const ctx = this.ctx;
     const lineData = win.lines.get(row);
-    const x = Math.round(win.x * m.charW);
-    const rowY = lineData && Number.isFinite(lineData.pixel_y)
-      ? lineData.pixel_y
-      : row * m.charH;
-    const rowH = lineData && Number.isFinite(lineData.pixel_h)
-      ? lineData.pixel_h
-      : m.charH;
-    const y = Math.round(win.y * m.charH + rowY);
-    const width = Math.ceil(win.w * m.charW);
-    const height = Math.ceil(rowH);
+    const { x, y, width, height } = this.lineGeometry(win, row, lineData);
 
     const baseBg = lineData && lineData.mode_line && lineData.runs?.[0]
       ? state.getFace(lineData.runs[0].face_id).bg
@@ -438,6 +498,8 @@ export class FrameRenderer {
     }
 
     if (lineData.mode_line) {
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      ctx.fillRect(x, y, width, 1);
       ctx.fillStyle = 'rgba(0,0,0,0.35)';
       ctx.fillRect(x, y + height - 1, width, 1);
     }
@@ -446,22 +508,21 @@ export class FrameRenderer {
   drawImages (win, state, visibleWidgets) {
     const m = this.metrics;
     const ctx = this.ctx;
-    const winX = Math.round(win.x * m.charW);
-    const winY = Math.round(win.y * m.charH);
+    const winX = win.px !== undefined ? win.px : Math.round(win.x * m.charW);
+    const winY = win.py !== undefined ? win.py : Math.round(win.y * m.charH);
+    const winW = win.pw !== undefined ? win.pw : Math.ceil(win.w * m.charW);
+    const winH = win.ph !== undefined ? win.ph : Math.ceil(win.h * m.charH);
     const widgets = window._widgets;
 
     /* Compute the window content area (exclude modeline).  */
-    let contentH = win.h;
     const lastLine = win.lines.get(win.h - 1);
-    if (lastLine && lastLine.mode_line) contentH--;
-    const winRight = winX + Math.ceil(win.w * m.charW);
-    const winBottom = winY + Math.ceil(contentH * m.charH);
+    const contentH = (lastLine && lastLine.mode_line) ? winH - m.charH : winH;
+    const winRight = winX + winW;
+    const winBottom = winY + contentH;
 
     for (const [row, lineData] of win.lines) {
       if (row < 0 || row >= win.h || !lineData || !lineData.runs) continue;
-      const rowY = Number.isFinite(lineData.pixel_y)
-        ? lineData.pixel_y : row * m.charH;
-      const y = Math.round(winY + rowY);
+      const { y } = this.lineGeometry(win, row, lineData);
       let col = 0;
 
       for (const run of lineData.runs) {
@@ -526,12 +587,11 @@ export class FrameRenderer {
 
     node.className = 'emacs-cursor ' + cursorClass(cursor);
     const lineData = win.lines.get(cursor.row);
-    const rowY = lineData && Number.isFinite(lineData.pixel_y)
-      ? lineData.pixel_y
-      : cursor.row * m.charH;
+    const geom = this.lineGeometry(win, cursor.row, lineData);
+    const cursorX = geom.x + cursor.col * m.charW;
     node.style.transform = 'translate3d('
-      + Math.round((win.x + cursor.col) * m.charW) + 'px,'
-      + Math.round(win.y * m.charH + rowY) + 'px,0)';
+      + Math.round(cursorX) + 'px,'
+      + Math.round(geom.y) + 'px,0)';
     node.style.width = Math.ceil(m.charW) + 'px';
     node.style.height = Math.ceil(m.charH) + 'px';
   }
@@ -561,14 +621,17 @@ export class FrameRenderer {
     }
 
     const m = this.metrics;
-    const geomKey = win.x + ':' + win.y + ':' + win.w + ':' + win.h;
+    const geomKey = win.x + ':' + win.y + ':' + win.w + ':' + win.h
+      + ':' + (win.px || 0) + ':' + (win.py || 0);
     if (rec.geomKey !== geomKey) {
       rec.geomKey = geomKey;
-      rec.node.style.transform = 'translate3d('
-        + Math.round(win.x * m.charW) + 'px,'
-        + Math.round(win.y * m.charH) + 'px,0)';
-      rec.node.style.width = Math.ceil(win.w * m.charW) + 'px';
-      rec.node.style.height = Math.ceil(win.h * m.charH) + 'px';
+      const mbX = win.px !== undefined ? win.px : Math.round(win.x * m.charW);
+      const mbY = win.py !== undefined ? win.py : Math.round(win.y * m.charH);
+      const mbW = win.pw !== undefined ? win.pw : Math.ceil(win.w * m.charW);
+      const mbH = win.ph !== undefined ? win.ph : Math.ceil(win.h * m.charH);
+      rec.node.style.transform = 'translate3d(' + mbX + 'px,' + mbY + 'px,0)';
+      rec.node.style.width = mbW + 'px';
+      rec.node.style.height = mbH + 'px';
     }
 
     const items = menuItemsFromWindow(win);

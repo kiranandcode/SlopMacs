@@ -169,6 +169,7 @@ struct web_display_info
     struct json_window {
       EMACS_INT id;
       int x, y, w, h;          /* char-cell units */
+      int px, py, pw, ph;      /* frame-relative pixel geometry */
       struct json_line {
         int row_index;
         int pixel_y, pixel_h;  /* window-relative pixel geometry */
