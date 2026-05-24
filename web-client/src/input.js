@@ -4,17 +4,29 @@
 
 import { measureFont } from './measure.js';
 
-// Modifier bit flags (match Emacs conventions)
+// Modifier bit flags (must match WIRE_MOD_* in webterm.c)
 const MOD_SHIFT = 1 << 0;
 const MOD_CTRL  = 1 << 2;
-const MOD_META  = 1 << 3;  // Alt/Option, and Command on macOS
+const MOD_META  = 1 << 3;
+const MOD_SUPER = 1 << 4;
+
+const IS_MAC = /Mac|iPhone|iPad|iPod/.test(navigator.platform)
+  || /Mac/.test(navigator.userAgent)
+  || navigator.userAgentData?.platform === 'macOS';
 
 function getModifiers (e) {
   let m = 0;
   if (e.shiftKey) m |= MOD_SHIFT;
   if (e.ctrlKey)  m |= MOD_CTRL;
-  if (e.altKey)   m |= MOD_META;
-  if (e.metaKey)  m |= MOD_META;
+  if (IS_MAC) {
+    // macOS: Command = Meta, Option = Super
+    if (e.metaKey) m |= MOD_META;
+    if (e.altKey)  m |= MOD_SUPER;
+  } else {
+    // Linux/Windows: Alt = Meta, Win/Super = Super
+    if (e.altKey)  m |= MOD_META;
+    if (e.metaKey) m |= MOD_SUPER;
+  }
   return m;
 }
 
@@ -48,6 +60,41 @@ const SPECIAL_KEYS = {
   'F21': 0xFFD2, 'F22': 0xFFD3, 'F23': 0xFFD4, 'F24': 0xFFD5,
 };
 
+/* Map physical key codes (e.code) to the base ASCII character.
+   Used on macOS when Option is held, since the browser produces the
+   Option-composed character in e.key instead of the raw key.  */
+function codeToChar (code, shift) {
+  if (code.startsWith('Key')) {
+    const ch = code.charCodeAt(3);  // 'A'-'Z'
+    return shift ? ch : (ch + 32);  // uppercase or lowercase
+  }
+  if (code.startsWith('Digit')) {
+    if (!shift) return code.charCodeAt(5);  // '0'-'9'
+    // Shifted digits on US keyboard
+    const shifted = ')!@#$%^&*(';
+    const idx = code.charCodeAt(5) - 48;  // '0'=48
+    return shifted.charCodeAt(idx);
+  }
+  // Punctuation keys (US keyboard layout)
+  const MAP = {
+    Minus:        [0x2D, 0x5F],  // - _
+    Equal:        [0x3D, 0x2B],  // = +
+    BracketLeft:  [0x5B, 0x7B],  // [ {
+    BracketRight: [0x5D, 0x7D],  // ] }
+    Backslash:    [0x5C, 0x7C],  // \ |
+    Semicolon:    [0x3B, 0x3A],  // ; :
+    Quote:        [0x27, 0x22],  // ' "
+    Backquote:    [0x60, 0x7E],  // ` ~
+    Comma:        [0x2C, 0x3C],  // , <
+    Period:       [0x2E, 0x3E],  // . >
+    Slash:        [0x2F, 0x3F],  // / ?
+    Space:        [0x20, 0x20],
+  };
+  const entry = MAP[code];
+  if (entry) return entry[shift ? 1 : 0];
+  return 0;
+}
+
 export class InputHandler {
   constructor (el, ws) {
     this.el = el;
@@ -64,6 +111,15 @@ export class InputHandler {
   _send (obj) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(obj) + '\n');
+    }
+  }
+
+  /* Send a string as individual key events so it flows through
+     the normal Emacs command loop (and into web-term's PTY).  */
+  _pasteText (text) {
+    for (const ch of text) {
+      const code = ch.codePointAt(0);
+      this._send({ type: 'key', keycode: code, mods: 0, 'char': code });
     }
   }
 
@@ -84,20 +140,59 @@ export class InputHandler {
         return;
       }
 
-      const mods = getModifiers(e);
+      let mods = getModifiers(e);
       let keycode = 0;
       let charCode = 0;
 
       if (SPECIAL_KEYS[e.key]) {
         keycode = SPECIAL_KEYS[e.key];
         charCode = 0;
+        // On macOS, arrow/nav keys have NSEventModifierFlagFunction set,
+        // which our native Fn→Option module converts to altKey (= Super).
+        // Strip the false Super so plain arrows stay unmodified.
+        if (IS_MAC && e.altKey && !e.metaKey && !e.ctrlKey) {
+          mods &= ~MOD_SUPER;
+        }
       } else if (e.key.length === 1) {
         charCode = e.key.codePointAt(0);
         keycode = charCode;
+
+        // On macOS, Option+key produces a special character in e.key
+        // (e.g. Option+t → "†").  When Option is held (Super for us),
+        // use the physical key code to get the raw unmodified character.
+        if (IS_MAC && e.altKey && e.code) {
+          const raw = codeToChar(e.code, e.shiftKey);
+          if (raw) {
+            charCode = raw;
+            keycode = raw;
+          }
+        }
+
         // For Ctrl+letter, send the control character
         if (e.ctrlKey && charCode >= 0x61 && charCode <= 0x7A) {
           charCode = charCode - 0x60;
           keycode = charCode;
+        } else {
+          // Strip shift for regular printable characters — the shift
+          // is already incorporated in the character code (e.g. '"'
+          // vs "'").  Only special keys need explicit shift_modifier.
+          mods &= ~MOD_SHIFT;
+        }
+      } else if (e.key === 'Dead') {
+        // Dead key pressed (e.g. Option+e for acute accent on macOS).
+        // When Option is our Super modifier, derive the raw key from
+        // the physical key code and send it with Super.
+        if (IS_MAC && e.altKey && e.code) {
+          const raw = codeToChar(e.code, e.shiftKey);
+          if (raw) {
+            charCode = raw;
+            keycode = raw;
+            mods &= ~MOD_SHIFT;
+          } else {
+            return;
+          }
+        } else {
+          return;
         }
       } else {
         return;
@@ -113,12 +208,33 @@ export class InputHandler {
     this._on(window, 'contextmenu', prevent, { capture: true, passive: false });
     this._on(window, 'auxclick', prevent, { capture: true, passive: false });
     this._on(window, 'dragstart', prevent, { capture: true, passive: false });
+    this._on(window, 'dragover', (e) => { e.preventDefault(); e.dropEffect = 'copy'; },
+             { capture: true, passive: false });
+    this._on(window, 'drop', (e) => {
+      swallow(e);
+      const files = e.dataTransfer?.files;
+      if (files && files.length > 0) {
+        // Use Electron's webUtils preload API for full paths (sandbox-safe),
+        // fall back to f.path (non-sandboxed) or f.name.
+        const getPath = window.electronAPI?.getPathForFile;
+        const paths = Array.from(files).map(f =>
+          (getPath ? getPath(f) : null) || f.path || f.name
+        ).filter(Boolean);
+        if (paths.length > 0) {
+          // Use clipboard event for bracketed paste (so terminal apps
+          // like Claude Code don't interpret '/' as a command prefix).
+          this._send({ type: 'clipboard', dir: 'paste', text: paths.join(' ') });
+        }
+      }
+    }, { capture: true, passive: false });
     this._on(window, 'selectstart', prevent, { capture: true, passive: false });
 
     this._on(document, 'paste', (e) => {
       swallow(e);
       const text = e.clipboardData?.getData('text');
       if (text) {
+        // Use clipboard event for bracketed paste (so terminal apps
+        // like Claude Code don't interpret '/' as a command prefix).
         this._send({ type: 'clipboard', dir: 'paste', text });
       }
     }, { capture: true, passive: false });

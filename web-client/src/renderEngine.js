@@ -362,6 +362,13 @@ export class FrameRenderer {
 
     this.drawImages(win, state, visibleWidgets);
 
+    /* Fill any pixel gap below the last line row with background.  */
+    const contentBottom = win.h * m.charH;
+    if (contentBottom < h) {
+      ctx.fillStyle = state.defaultBg;
+      ctx.fillRect(x, y + contentBottom, w, h - contentBottom);
+    }
+
     ctx.fillStyle = 'rgba(255,255,255,0.06)';
     ctx.fillRect(x + w - 1, y, 1, win.ph || h);
     ctx.restore();
