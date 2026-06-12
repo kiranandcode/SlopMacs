@@ -14,6 +14,7 @@ function Frame ({ state }) {
 
     const renderer = new FrameRenderer(rootRef.current, measureFont());
     rendererRef.current = renderer;
+    window._renderer = renderer;   /* debug REPL access */
     renderer.schedule(state);
 
     const unsubscribe = state.onChange((immediate) => {

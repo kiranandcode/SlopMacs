@@ -54,11 +54,6 @@
 (defvar-local web-term--cols 80
   "Current terminal columns.")
 
-(defvar-local web-term--onlcr-fixup nil
-  "Non-nil after we have sent `stty onlcr' to the shell.
-Emacs intentionally clears ONLCR on PTYs (see child_setup_tty),
-but terminal emulators need it so that LF produces CR+LF.")
-
 ;;; — Keymap —
 
 (defvar web-term-mode-map
@@ -189,14 +184,9 @@ MODS is a bitmask: 1=shift, 2=alt, 4=ctrl."
 (defun web-term--make-filter (handle buf)
   "Return a process filter that feeds data to libvterm.
 HANDLE is the vterm instance, BUF is the terminal buffer."
-  (lambda (proc output)
+  (lambda (_proc output)
     (when (buffer-live-p buf)
       (with-current-buffer buf
-        ;; On first output the shell has initialized; re-enable ONLCR
-        ;; which child_setup_tty intentionally disables.
-        (unless web-term--onlcr-fixup
-          (setq web-term--onlcr-fixup t)
-          (process-send-string proc " stty onlcr\n"))
         ;; Feed raw bytes to libvterm parser.
         (web-vterm-write handle output)
         ;; Sync screen to buffer.
@@ -305,16 +295,23 @@ Optional CMD specifies the shell command to run (default: $SHELL)."
       (let ((inhibit-read-only t)
             (inhibit-modification-hooks t))
         (web-vterm-init-buffer handle buf))
-      ;; Start shell process with TERM set for libvterm.
+      ;; Start shell process with TERM set for libvterm.  Emacs
+      ;; intentionally clears ONLCR on PTYs (child_setup_tty), but
+      ;; terminal emulators need it so LF produces CR+LF; restore it
+      ;; before exec'ing the command rather than typing an stty
+      ;; command at whatever is already running (fatal for tmux
+      ;; attach: the keystrokes would land inside the session).
       (let ((process-environment (cons "TERM=xterm-256color"
                                        process-environment)))
         (setq web-term--process
               (make-process
                :name "web-term"
                :buffer nil  ; don't auto-insert output
-               :command (if (string-match-p " " shell)
-                            (list "sh" "-c" shell)
-                          (list shell))
+               :command (list "sh" "-c"
+                              (concat "stty onlcr 2>/dev/null; "
+                                      (if (string-match-p " " shell)
+                                          shell
+                                        (concat "exec " shell))))
                :connection-type 'pty
                :coding 'no-conversion
                :filter (web-term--make-filter handle buf)

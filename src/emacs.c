@@ -2461,6 +2461,9 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
       syms_of_webfns ();
       syms_of_webfont ();
       syms_of_fontset ();
+#ifdef HAVE_VTERM
+      syms_of_webvterm ();
+#endif
 #endif /* HAVE_WEB */
 
       syms_of_gnutls ();

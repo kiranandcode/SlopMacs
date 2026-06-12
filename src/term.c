@@ -5047,13 +5047,18 @@ static Lisp_Object
 tty_frame_geometry (Lisp_Object frame, Lisp_Object attribute)
 {
   struct frame *f = decode_live_frame (frame);
-  if (FRAME_INITIAL_P (f) || !FRAME_TTY (f))
+  /* FRAME_TTY aborts on non-tty frames, so it cannot be used to test
+     for one.  Web frames take this path too: frame.el's geometry
+     dispatch falls through to tty-frame-* for window systems it does
+     not know, and everything below uses only generic frame fields.  */
+  if (FRAME_INITIAL_P (f) || !(FRAME_TERMCAP_P (f) || FRAME_WEB_P (f)))
     return Qnil;
 
   int native_width = f->pixel_width;
   int native_height = f->pixel_height;
 
-  eassert (FRAME_PARENT_FRAME (f) || (f->left_pos == 0 && f->top_pos == 0));
+  eassert (FRAME_PARENT_FRAME (f) || FRAME_WEB_P (f)
+	   || (f->left_pos == 0 && f->top_pos == 0));
   int outer_left = f->left_pos;
   int outer_top = f->top_pos;
   int outer_right = outer_left + native_width;

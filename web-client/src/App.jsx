@@ -12,6 +12,96 @@ import './widgets.js';
 const state = new FrameState();
 window._state = state;
 
+/* Iframes overlaid on windows whose buffer sets `web-webview-url'
+   (Emacs side: web-webview.el / webterm.c).  Subscribes to FrameState
+   directly — App deliberately does not re-render on frame updates.
+   Geometry is Emacs frame pixels, which map 1:1 onto CSS pixels in
+   .frame-container.
+
+   Iframes are pooled by URL and merely hidden when no visible window
+   shows them (display:none keeps the page alive, like a background
+   browser tab) — switching Emacs tabs or buffers away and back must
+   not reload the embedded app.  Keys are URLs, so React never
+   remounts a pooled iframe while it stays in the pool; the
+   least-recently-visible entries are evicted past the cap.  */
+const MAX_POOLED_WEBVIEWS = 6;
+
+function WebviewLayer ({ state }) {
+  const [snap, setSnap] = useState({ views: [], pool: [] });
+  const poolRef = useRef(new Map());   /* url -> LRU stamp */
+  const stampRef = useRef(0);
+
+  useEffect(() => {
+    const recompute = () => {
+      const views = [];
+      for (const w of state.windows.values()) {
+        if (w.webview) {
+          views.push({
+            id: w.id,
+            url: w.webview,
+            x: w.px || 0,
+            y: w.py || 0,
+            w: w.pw || 0,
+            h: w.webviewPh || w.ph || 0,
+          });
+        }
+      }
+      views.sort((a, b) => a.id - b.id);
+
+      const pool = poolRef.current;
+      const stamp = ++stampRef.current;
+      for (const v of views) pool.set(v.url, stamp);
+      if (pool.size > MAX_POOLED_WEBVIEWS) {
+        const visible = new Set(views.map(v => v.url));
+        const evictable = [...pool.entries()]
+          .filter(([url]) => !visible.has(url))
+          .sort((a, b) => a[1] - b[1]);
+        for (const [url] of evictable) {
+          if (pool.size <= MAX_POOLED_WEBVIEWS) break;
+          pool.delete(url);
+        }
+      }
+
+      const next = { views, pool: [...pool.keys()].sort() };
+      setSnap(prev =>
+        JSON.stringify(prev) === JSON.stringify(next) ? prev : next);
+    };
+    recompute();          /* current state, not just future changes */
+    return state.onChange(recompute);
+  }, [state]);
+
+  if (snap.pool.length === 0) return null;
+  return (
+    <div className="webview-layer">
+      {snap.pool.map(url => {
+        const here = snap.views.filter(v => v.url === url);
+        const v = here[0];
+        return (
+          <React.Fragment key={url}>
+            <iframe
+              className="webview-frame"
+              src={url}
+              style={v
+                ? { left: v.x, top: v.y, width: v.w, height: v.h }
+                : { display: 'none' }}
+            />
+            {/* Rare: the same URL visible in several windows at once.
+                Extra copies are ephemeral (they reload on remount).  */}
+            {here.slice(1).map((dv, i) => (
+              <iframe
+                key={`${url}#${i}`}
+                className="webview-frame"
+                src={url}
+                style={{ left: dv.x, top: dv.y, width: dv.w, height: dv.h }}
+              />
+            ))}
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function App () {
   const [, forceUpdate] = useState(0);
   const frameRef = useRef(null);
@@ -26,12 +116,17 @@ export default function App () {
   const [connStatus, setConnStatus] = useState('disconnected');
   const [busy, setBusy] = useState(false);
 
+  /* The pill means "Emacs looks wedged": no traffic at all for two
+     heartbeat intervals (WEB_HEARTBEAT_MS = 5000 on the C side).  Any
+     message resets the timer — with the preemptive executor, redisplay
+     keeps streaming even while a command grinds, so silence is the
+     only meaningful distress signal.  */
   const resetHeartbeat = useCallback(() => {
     if (busyTimerRef.current) clearTimeout(busyTimerRef.current);
     busyTimerRef.current = setTimeout(() => {
       busyRef.current = true;
       setBusy(true);
-    }, 1000);
+    }, 11000);
     if (busyRef.current) {
       busyRef.current = false;
       setBusy(false);
@@ -229,6 +324,7 @@ export default function App () {
         tabIndex={0}
       >
         <Frame state={state} />
+        <WebviewLayer state={state} />
       </div>
 
       {state.activeMenu && wsRef.current && (

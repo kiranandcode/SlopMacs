@@ -84,6 +84,91 @@ create_listener (int port)
 
 /* Called when a browser client sends us a text message (JSON input event).
    Forward it to Emacs, unless it's a debug eval_result.  */
+/* Last font_metrics and resize messages from the active client,
+   newline-terminated.  Replayed to a (re)attaching Emacs: with the
+   persistent proxy the WebSocket never reopens across an Emacs
+   restart, so the client has no reason to re-send them and a fresh
+   Emacs would otherwise sit at the default 80x25 until the user
+   happened to resize the window.  */
+static uint8_t cached_metrics[512];
+static size_t cached_metrics_len = 0;
+static uint8_t cached_resize[256];
+static size_t cached_resize_len = 0;
+static uint8_t cached_focus[128];
+static size_t cached_focus_len = 0;
+
+static void
+cache_client_message (const uint8_t *data, size_t len)
+{
+  uint8_t *buf;
+  size_t cap, *plen;
+
+  if (len == 0)
+    return;
+  if (memmem (data, len, "\"font_metrics\"", 14))
+    {
+      buf = cached_metrics;
+      cap = sizeof cached_metrics;
+      plen = &cached_metrics_len;
+    }
+  else if (memmem (data, len, "\"resize\"", 8))
+    {
+      buf = cached_resize;
+      cap = sizeof cached_resize;
+      plen = &cached_resize_len;
+    }
+  else if (memmem (data, len, "\"focus\"", 7))
+    {
+      /* A fresh Emacs assumes its frame is unfocused and renders no
+         active cursor until the next OS focus transition; replaying
+         the latest focus state fixes that.  */
+      buf = cached_focus;
+      cap = sizeof cached_focus;
+      plen = &cached_focus_len;
+    }
+  else
+    return;
+
+  if (len + 1 > cap)
+    return;
+  memcpy (buf, data, len);
+  if (buf[len - 1] != '\n')
+    buf[len++] = '\n';
+  *plen = len;
+}
+
+static void
+write_all_to_emacs (const uint8_t *data, size_t len)
+{
+  int out_fd = (emacs_fd >= 0) ? emacs_fd : STDOUT_FILENO;
+  size_t written = 0;
+  while (written < len)
+    {
+      ssize_t n = write (out_fd, data + written, len - written);
+      if (n <= 0)
+        {
+          if (errno == EAGAIN || errno == EWOULDBLOCK)
+            continue;
+          break;
+        }
+      written += n;
+    }
+}
+
+/* On Emacs (re)attach, replay the client's last known font metrics
+   and frame size so the fresh instance matches the window before the
+   redraw it is about to be asked for.  */
+static void
+replay_client_state (void)
+{
+  if (cached_metrics_len > 0)
+    write_all_to_emacs (cached_metrics, cached_metrics_len);
+  if (cached_resize_len > 0)
+    write_all_to_emacs (cached_resize, cached_resize_len);
+  if (cached_focus_len > 0)
+    write_all_to_emacs (cached_focus, cached_focus_len);
+}
+
 static void
 on_client_message (struct ws_server *srv, int client_idx,
                    const uint8_t *data, size_t len, void *userdata)
@@ -126,6 +211,10 @@ on_client_message (struct ws_server *srv, int client_idx,
   /* Drop input from non-active clients to prevent double events.  */
   if (client_fd != active_input_fd && active_input_fd >= 0)
     return;
+
+  /* Remember metrics/size for replay on Emacs (re)attach — also (and
+     especially) while no Emacs is attached to receive them live.  */
+  cache_client_message (data, len);
 
   /* Forward to Emacs — ensure newline termination.  While no Emacs is
      attached in --emacs-port mode, drop input instead of spraying it
@@ -365,6 +454,7 @@ event_loop (void)
                   fprintf (stderr, "Emacs attached\n");
                   /* Ask the (possibly fresh) Emacs for a full frame so
                      connected browser clients repaint immediately.  */
+                  replay_client_state ();
                   request_redraw ();
                 }
             }
@@ -580,6 +670,7 @@ event_loop (void)
                   eev.data.fd = emacs_fd;
                   epoll_ctl (epfd, EPOLL_CTL_ADD, emacs_fd, &eev);
                   fprintf (stderr, "Emacs attached\n");
+                  replay_client_state ();
                   request_redraw ();
                 }
             }

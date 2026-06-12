@@ -121,6 +121,20 @@ html, body, #root {
   flex: 1;
   overflow: hidden;
   outline: none;
+  position: relative;  /* anchors .webview-layer */
+}
+
+/* ---- embedded web views (web-webview.el) ---- */
+.webview-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;  /* gaps stay clickable for Emacs */
+}
+.webview-frame {
+  position: absolute;
+  pointer-events: auto;
+  border: none;
+  background: #fff;
 }
 
 /* ---- emacs frame ---- */

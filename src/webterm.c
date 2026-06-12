@@ -321,38 +321,42 @@ web_glyph_row_index (struct window *w, struct glyph_row *row,
   if (max_row <= 0)
     return 0;
 
-  /* Mode line rows always go at the last row position.  */
-  if (row && row->mode_line_p)
-    return max_row - 1;
-
   /* Use the matrix vpos (sequential row index) when the row pointer
      belongs to the window's glyph matrix.  This is correct even when
      rows have varying pixel heights (e.g. images, variable-pitch
      fonts).  The old pixel-division approach (y / ch) produced gaps
-     when rows were taller than the default character height.  */
+     when rows were taller than the default character height.
+
+     Text rows return their RAW vpos, never clamped to
+     WINDOW_TOTAL_LINES.  When a window's pixel height is not an exact
+     multiple of the line height, the matrix holds a partially-visible
+     text row below the last full one; clamping squashed that row and
+     the mode line into one index, so whichever was drawn last stomped
+     the other — the bottom-row corruption seen while scrolling.
+
+     The mode line is keyed at exactly WINDOW_TOTAL_LINES, one past
+     the last canonical text row.  Its raw vpos would be the matrix's
+     last row, but matrices carry spare rows beyond the window's
+     visible height (e.g. nrows 23 for a 19-line window), so raw vpos
+     is meaningless to the client.  A visible text row's vpos is
+     always <= WINDOW_TOTAL_LINES - 1, so this never collides.  The
+     client renders mode lines at the window bottom by flag.  */
   if (row)
     {
+      if (row->mode_line_p)
+	return max_row;
+
       struct glyph_matrix *matrix = w->current_matrix;
       if (matrix && matrix->rows
 	  && row >= matrix->rows
 	  && row < matrix->rows + matrix->nrows)
-	{
-	  int vpos = MATRIX_ROW_VPOS (row, matrix);
-	  if (vpos >= max_row)
-	    vpos = max_row - 1;
-	  return vpos;
-	}
+	return MATRIX_ROW_VPOS (row, matrix);
       /* Try desired_matrix too (during redisplay updates).  */
       matrix = w->desired_matrix;
       if (matrix && matrix->rows
 	  && row >= matrix->rows
 	  && row < matrix->rows + matrix->nrows)
-	{
-	  int vpos = MATRIX_ROW_VPOS (row, matrix);
-	  if (vpos >= max_row)
-	    vpos = max_row - 1;
-	  return vpos;
-	}
+	return MATRIX_ROW_VPOS (row, matrix);
     }
 
   /* Fallback: pixel division for rows not in either matrix.  */
@@ -443,6 +447,26 @@ encode_utf8 (unsigned int cp, unsigned char *buf)
       return 4; }
 }
 
+/* Capture the buffer-local `web-webview-url' of W's buffer into JW.
+   A non-empty URL makes the client overlay an iframe over the window
+   body.  Reset first so a slot reused for a non-webview buffer clears
+   the overlay.  */
+static void
+web_capture_webview (struct json_window *jw, struct window *w)
+{
+  jw->webview_url[0] = 0;
+  jw->webview_ph = 0;
+  if (!BUFFERP (w->contents))
+    return;
+  Lisp_Object url = buffer_local_value (Qweb_webview_url, w->contents);
+  if (!STRINGP (url))
+    return;
+  ptrdiff_t len = min (SBYTES (url), (ptrdiff_t) sizeof jw->webview_url - 1);
+  memcpy (jw->webview_url, SDATA (url), len);
+  jw->webview_url[len] = 0;
+  jw->webview_ph = WINDOW_BOX_HEIGHT_NO_MODE_LINE (w);
+}
+
 static void
 web_update_window_begin (struct window *w)
 {
@@ -469,6 +493,7 @@ web_update_window_begin (struct window *w)
   jw->ph = WINDOW_PIXEL_HEIGHT (w);
   jw->active = true;
   jw->is_menu_bar = WINDOW_MENU_BAR_P (w);
+  web_capture_webview (jw, w);
 
   js->current_window = jw;
   js->current_line = NULL;
@@ -516,6 +541,7 @@ web_build_row_content (struct window *w, struct glyph_row *row)
       jw->w = WINDOW_TOTAL_COLS (w);
       jw->h = WINDOW_TOTAL_LINES (w);
       jw->active = true;
+      web_capture_webview (jw, w);
     }
 
   int row_index = web_glyph_row_index (w, row,
@@ -657,6 +683,7 @@ web_build_row_content (struct window *w, struct glyph_row *row)
   jl->continued_p = row->continued_p;
   jl->truncated_left_p = row->truncated_on_left_p;
   jl->truncated_right_p = row->truncated_on_right_p;
+  jl->seq = ++js->line_build_seq;
   jl->complete = true;
   jw->has_complete_lines = true;
 }
@@ -692,6 +719,7 @@ web_scroll_run (struct window *w, struct run *run)
       js->scrolls[js->nscrolls].current_row = run->current_vpos;
       js->scrolls[js->nscrolls].desired_row = run->desired_vpos;
       js->scrolls[js->nscrolls].nrows = run->nrows;
+      js->scrolls[js->nscrolls].delta_px = run->desired_y - run->current_y;
       js->nscrolls++;
     }
 }
@@ -1074,12 +1102,14 @@ web_flush_display (struct frame *f)
     web_write_printf (dpyinfo,
 		      "{\"type\":\"scroll\",\"window_id\":%ld,"
 		      "\"delta_rows\":%d,\"current_row\":%d,"
-		      "\"desired_row\":%d,\"nrows\":%d}\n",
+		      "\"desired_row\":%d,\"nrows\":%d,"
+		      "\"delta_px\":%d}\n",
 		      (long)js->scrolls[i].window_id,
 		      js->scrolls[i].delta_rows,
 		      js->scrolls[i].current_row,
 		      js->scrolls[i].desired_row,
-		      js->scrolls[i].nrows);
+		      js->scrolls[i].nrows,
+		      js->scrolls[i].delta_px);
 
   /* 2b. Rectangle clears.  These cover redisplay paths such as folding
      that clear a window area without replacing every row.  */
@@ -1225,6 +1255,41 @@ web_flush_display (struct frame *f)
 
 	      if (jw->is_menu_bar)
 		WR_LIT (dpyinfo, ",\"menu_bar\":true");
+
+	      /* Always emitted: an empty string clears a stale overlay
+		 when the window switches to a non-webview buffer.  */
+	      WR_LIT (dpyinfo, ",\"webview\":");
+	      web_write_json_string (dpyinfo, jw->webview_url,
+				     strlen (jw->webview_url));
+	      if (jw->webview_url[0])
+		web_write_printf (dpyinfo, ",\"webview_ph\":%d",
+				  jw->webview_ph);
+
+	      /* Within-cycle consistency: lines accumulate over the
+		 whole redisplay cycle, and a scroll mid-cycle reuses
+		 row indices at new pixel positions — so an
+		 early-captured line can overlap a later one in pixel
+		 space.  The matrix never truly holds overlapping
+		 rows; keep only the latest capture of each strip.  */
+	      for (int a = 0; a < jw->nlines; a++)
+		{
+		  struct json_line *la = &jw->lines[a];
+		  if (!la->complete || la->mode_line_p)
+		    continue;
+		  for (int b = 0; b < jw->nlines; b++)
+		    {
+		      struct json_line *lb = &jw->lines[b];
+		      if (a == b || !lb->complete || lb->mode_line_p)
+			continue;
+		      if (la->pixel_y < lb->pixel_y + lb->pixel_h
+			  && la->pixel_y + la->pixel_h > lb->pixel_y
+			  && la->seq < lb->seq)
+			{
+			  la->complete = false;
+			  break;
+			}
+		    }
+		}
 
 	      /* Lines — only send complete (fully built) lines.  */
 	      if (jw->nlines > 0)
@@ -1445,15 +1510,20 @@ web_draw_window_cursor (struct window *w,
       jw->w = WINDOW_TOTAL_COLS (w);
       jw->h = WINDOW_TOTAL_LINES (w);
       jw->active = true;
+      web_capture_webview (jw, w);
     }
 
   w->phys_cursor_type = cursor_type;
   w->phys_cursor_on_p = true;
   w->phys_cursor_width = cursor_width;
 
-  /* Compute cursor position in character cells.  */
+  /* Compute cursor position in character cells.  X here is relative
+     to the window's text area already (output_cursor coordinates) —
+     subtracting the window's frame-relative text origin, as this once
+     did, pushed the cursor off-screen in any window that doesn't
+     start at the frame's left edge (side-by-side splits).  */
   int cw = dpyinfo->default_char_width;
-  int col = cw > 0 ? (x - WINDOW_TEXT_TO_FRAME_PIXEL_X (w, 0)) / cw : 0;
+  int col = cw > 0 ? x / cw : 0;
   int row = web_glyph_row_index (w, glyph_row, y);
 
   jw->has_cursor = true;
@@ -1880,6 +1950,10 @@ web_dispatch_event (struct web_display_info *dpyinfo, struct web_event *event,
 	  {
 	    dpyinfo->x_focus_frame = f;
 	    dpyinfo->x_focus_event_frame = f;
+	    /* get_window_cursor_type only allows an ACTIVE (filled)
+	       cursor when the frame is the display's highlight frame;
+	       without this every cursor renders hollow.  */
+	    dpyinfo->highlight_frame = f;
 	    ie.kind = FOCUS_IN_EVENT;
 	  }
 	else
@@ -1887,6 +1961,8 @@ web_dispatch_event (struct web_display_info *dpyinfo, struct web_event *event,
 	    if (dpyinfo->x_focus_frame == f)
 	      dpyinfo->x_focus_frame = NULL;
 	    dpyinfo->x_focus_event_frame = NULL;
+	    if (dpyinfo->highlight_frame == f)
+	      dpyinfo->highlight_frame = NULL;
 	    ie.kind = FOCUS_OUT_EVENT;
 	  }
 	kbd_buffer_store_event (&ie);
@@ -2178,6 +2254,10 @@ web_read_socket (struct terminal *terminal,
 	    {
 	      dpyinfo->x_focus_frame = f;
 	      dpyinfo->x_focus_event_frame = f;
+	      /* get_window_cursor_type only allows an ACTIVE (filled)
+		 cursor when the frame is the display's highlight
+		 frame; without this every cursor renders hollow.  */
+	      dpyinfo->highlight_frame = f;
 	      /* Send FOCUS_IN_EVENT so Emacs updates internal focus
 		 tracking and renders an active cursor.  */
 	      struct input_event ie;
@@ -2193,6 +2273,8 @@ web_read_socket (struct terminal *terminal,
 	      if (dpyinfo->x_focus_frame == f)
 		dpyinfo->x_focus_frame = NULL;
 	      dpyinfo->x_focus_event_frame = NULL;
+	      if (dpyinfo->highlight_frame == f)
+		dpyinfo->highlight_frame = NULL;
 	      struct input_event ie;
 	      EVENT_INIT (ie);
 	      ie.kind = FOCUS_OUT_EVENT;
@@ -3560,6 +3642,7 @@ void
 syms_of_webterm (void)
 {
   DEFSYM (Qweb, "web");
+  DEFSYM (Qweb_webview_url, "web-webview-url");
 
   defsubr (&Sweb__start_redisplay_timer);
   defsubr (&Sweb_set_clipboard);

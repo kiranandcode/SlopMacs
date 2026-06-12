@@ -64,6 +64,7 @@ skipped."
 (defvar session-reload--flag-file nil)
 (defvar session-reload--window-file nil)
 (defvar session-reload--buffers-file nil)
+(defvar session-reload--slop-terms-file nil)
 
 (defun session-reload--paths ()
   (setq session-reload--flag-file
@@ -71,7 +72,9 @@ skipped."
         session-reload--window-file
         (expand-file-name "window-state.eld" session-reload-directory)
         session-reload--buffers-file
-        (expand-file-name "nonfile-buffers.eld" session-reload-directory)))
+        (expand-file-name "nonfile-buffers.eld" session-reload-directory)
+        session-reload--slop-terms-file
+        (expand-file-name "slop-terms.eld" session-reload-directory)))
 
 (defun session-reload--interesting-nonfile-buffers ()
   (cl-remove-if-not
@@ -80,9 +83,14 @@ skipped."
        (and (not (buffer-file-name buf))
             (not (string-prefix-p " " name))
             (or (string= name "*scratch*")
-                (not (string-prefix-p "*" name)))
-            (buffer-local-value 'buffer-undo-list buf) ; has been touched
-            (> (buffer-size buf) 0))))
+                (not (string-prefix-p "*" name))
+                ;; Embedded browser views restore from their URL alone.
+                (and (boundp 'web-webview-url)
+                     (buffer-local-value 'web-webview-url buf)))
+            (or (and (boundp 'web-webview-url)
+                     (buffer-local-value 'web-webview-url buf))
+                (and (buffer-local-value 'buffer-undo-list buf) ; touched
+                     (> (buffer-size buf) 0))))))
    (buffer-list)))
 
 (defun session-reload-save ()
@@ -103,9 +111,25 @@ skipped."
             (out '()))
         (dolist (buf (session-reload--interesting-nonfile-buffers))
           (with-current-buffer buf
-            (push (list (buffer-name) (buffer-string) (point) major-mode)
+            (push (list (buffer-name) (buffer-string) (point) major-mode
+                        (and (boundp 'web-webview-url) web-webview-url)
+                        (and (boundp 'web-webview-revive-function)
+                             web-webview-revive-function))
                   out)))
         (prin1 out (current-buffer)))))
+  ;; tmux-backed terminals: an explicit (buffer-name . tmux-session)
+  ;; registry, deliberately independent of desktop.el.  The tmux
+  ;; session is the source of truth; this file only records which
+  ;; ones to reattach.  Written unconditionally (possibly empty) so a
+  ;; stale registry never resurrects dead terminals.
+  (with-temp-file session-reload--slop-terms-file
+    (let (out)
+      (dolist (buf (buffer-list))
+        (with-current-buffer buf
+          (when (and (derived-mode-p 'web-term-mode)
+                     (bound-and-true-p slop-term-session))
+            (push (cons (buffer-name) slop-term-session) out))))
+      (prin1 out (current-buffer))))
   ;; Visited files, point positions, buffer order.  A stale lock from
   ;; a force-killed predecessor must not block or prompt.
   (let ((lock (expand-file-name ".emacs.desktop.lock"
@@ -134,24 +158,48 @@ session."
         (desktop-load-locked-desktop t)
         (desktop-dirname session-reload-directory))
     (ignore-errors (desktop-read session-reload-directory)))
+  ;; tmux-backed terminals, from the explicit registry (see
+  ;; session-reload-save).  Reattaching is idempotent: the tmux
+  ;; session keeps the running process and its full state.
+  (when (file-readable-p session-reload--slop-terms-file)
+    (when (require 'slop-term nil t)
+      (dolist (entry (with-temp-buffer
+                       (insert-file-contents session-reload--slop-terms-file)
+                       (ignore-errors (read (current-buffer)))))
+        (pcase-let ((`(,name . ,session) entry))
+          (ignore-errors
+            (let ((buf (save-window-excursion (slop-term session))))
+              (when (and buf (not (get-buffer name)))
+                (with-current-buffer buf (rename-buffer name t)))))))))
   ;; Non-file buffer contents.
   (when (file-readable-p session-reload--buffers-file)
     (dolist (spec (with-temp-buffer
                     (insert-file-contents session-reload--buffers-file)
                     (ignore-errors (read (current-buffer)))))
-      (pcase-let ((`(,name ,content ,pt ,mode) spec))
-        (with-current-buffer (get-buffer-create name)
-          ;; Replace pristine content (e.g. *scratch*'s initial
-          ;; message); leave buffers something else already filled.
-          (when (or (= (buffer-size) 0)
-                    (and (string= name "*scratch*")
-                         (not (buffer-modified-p))))
-            (erase-buffer)
-            (insert content)
-            (set-buffer-modified-p nil)
-            (goto-char (min pt (point-max)))
-            (when (and mode (fboundp mode))
-              (ignore-errors (funcall mode))))))))
+      (pcase-let ((`(,name ,content ,pt ,mode ,webview-url ,revive-fn) spec))
+        (if webview-url
+            ;; Embedded browser view: recreate from the URL; the
+            ;; content was only a placeholder.  A revive function
+            ;; (e.g. web-org-roam-graph) also restarts the in-Emacs
+            ;; server backing the view.
+            (when (require 'web-webview nil t)
+              (ignore-errors
+                (save-window-excursion
+                  (if (and revive-fn (fboundp revive-fn))
+                      (funcall revive-fn)
+                    (web-webview-open webview-url name)))))
+          (with-current-buffer (get-buffer-create name)
+            ;; Replace pristine content (e.g. *scratch*'s initial
+            ;; message); leave buffers something else already filled.
+            (when (or (= (buffer-size) 0)
+                      (and (string= name "*scratch*")
+                           (not (buffer-modified-p))))
+              (erase-buffer)
+              (insert content)
+              (set-buffer-modified-p nil)
+              (goto-char (min pt (point-max)))
+              (when (and mode (fboundp mode))
+                (ignore-errors (funcall mode)))))))))
   ;; Window layout.
   (when (file-readable-p session-reload--window-file)
     (ignore-errors

@@ -173,6 +173,10 @@ struct web_display_info
       struct json_line {
         int row_index;
         int pixel_y, pixel_h;  /* window-relative pixel geometry */
+        int seq;               /* capture order within the cycle; on
+                                  pixel overlap the later capture wins
+                                  (scrolls reuse row indices mid-cycle,
+                                  so early captures can be stale) */
         bool mode_line_p, continued_p, truncated_left_p, truncated_right_p;
         bool complete;   /* Set by after_update_window_line.  */
         struct json_run {
@@ -191,11 +195,20 @@ struct web_display_info
       bool active;
       bool has_complete_lines;  /* Any after_update_window_line calls?  */
       bool is_menu_bar;         /* True for the menu bar pseudo-window.  */
+      char webview_url[512];    /* Buffer-local `web-webview-url' of the
+                                   window's buffer; non-empty means the
+                                   client overlays an iframe over the
+                                   window body.  Always emitted (possibly
+                                   empty) so stale overlays clear.  */
+      int webview_ph;           /* Body pixel height, mode line excluded.  */
     } windows[WEB_MAX_WINDOWS];
     int nwindows;
 
     int face_ids[WEB_MAX_FACES];        /* faces referenced this cycle */
     int nface_ids;
+
+    int line_build_seq;        /* monotonically increasing capture
+                                  counter for json_line.seq */
 
     struct {
       EMACS_INT window_id;
@@ -203,6 +216,10 @@ struct web_display_info
       int current_row;
       int desired_row;
       int nrows;
+      int delta_px;             /* desired_y - current_y: pixel shift of
+                                   the moved block.  Row indices alone
+                                   misplace moved lines when row heights
+                                   vary (images).  */
     } scrolls[WEB_MAX_SCROLLS];
     int nscrolls;
 
@@ -361,6 +378,9 @@ extern void web_term_init (void);
 extern void syms_of_webterm (void);
 extern void syms_of_webfns (void);
 extern void syms_of_webfont (void);
+#ifdef HAVE_VTERM
+extern void syms_of_webvterm (void);
+#endif
 
 /* Write buffer API — used by webfns.c for load_font, image_data, etc.  */
 extern void web_write_str (struct web_display_info *dpyinfo,

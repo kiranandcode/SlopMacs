@@ -133,7 +133,11 @@ Pieces:
   Emacs to (re)attach over TCP (Emacs connects when
   `EMACS_WEB_EMACS_PORT` is set, else forks its own proxy as before).
   On detach it keeps the WebSocket clients and awaits the next Emacs;
-  on attach it requests a full redraw.  Result: zero client
+  on attach it replays the client's last `font_metrics` and `resize`
+  messages (cached from the live stream — the client only sends them
+  on WebSocket open, which never recurs across an Emacs restart) and
+  then requests a full redraw, so the fresh instance comes up at the
+  window's real size instead of 80x25.  Result: zero client
   disconnects across a reload.
 - **slop-reload.sh** — rebuild + `emacsclient -s web-emacs -e
   '(session-reload)'`, falling back to marker + kill if wedged.
@@ -142,12 +146,71 @@ Why not pdumper: dump files are fingerprint-locked to the binary that
 wrote them, so state cannot cross a rebuild boundary as a memory
 image; and pdumper can't capture window-system state, fds, or
 subprocesses.  Session state crosses at the Lisp level; long-lived
-subprocesses (the `claude` CLI) should live in tmux (slop-term.el) and
-get reattached by desktop-restore handlers.
+subprocesses (the `claude` CLI) live in tmux (slop-term.el) and are
+reattached from an explicit registry (`slop-terms.eld`, written by
+session-reload-save) — deliberately not desktop.el handlers, whose
+save/restore round-trip silently drops the buffer if one restore
+fails.
+
+## web-term: terminals / Claude Code in Emacs
+
+`src/webvterm.c` (built when configure finds libvterm; `HAVE_VTERM`)
+exposes `web-vterm-*` primitives: a VT-screen parser whose cell grid
+is rendered into a normal Emacs buffer as propertized text (anonymous
+plist faces, run-length batched per row).  Emacs redisplay's own
+row diffing keeps browser traffic incremental even though each update
+re-renders the whole grid.  lisp/web-term.el drives it: a PTY process
+(`stty onlcr; exec …` — Emacs clears ONLCR on PTYs) feeds
+`web-vterm-write`, then `web-vterm-update` syncs the buffer and the
+cursor follows `web-vterm-get-cursor`.  Keys are encoded by libvterm
+(`web-vterm-key-input`), so arrows/ctrl/function keys and bracketed
+paste are exact.
+
+lisp/slop-term.el layers tmux on top: `M-x slop-term NAME` attaches
+`tmux new-session -A -s NAME`, so the process (e.g. the `claude` CLI)
+survives Emacs restarts.  Across a hot reload the running Claude Code
+conversation is preserved end-to-end: tmux keeps the process, the
+registry reattaches the buffer, and the TUI re-renders into it.
+Tests: test/webvterm-batch-test.el (18 primitive checks, batch).
 
 **Rule: always `emacsclient -s web-emacs`.**  The default socket name
 belongs to your daily Emacs; the web instance must never be addressed
 (or addressable) through it.
+
+## web-webview: browser views embedded in buffers
+
+Because the display tier is a browser, a buffer can host live web
+content.  Any buffer whose buffer-local `web-webview-url` is a string
+gets an iframe overlaid on its window's body by the client
+(`WebviewLayer` in App.jsx): webterm.c captures the URL during
+redisplay into the per-window JSON (`web_capture_webview`), the
+client positions an iframe from the window's pixel geometry, and the
+mode line stays visible beneath it.  The field is always emitted
+(empty = none) so switching the window's buffer clears the overlay.
+lisp/web-webview.el provides `web-webview-open URL` and
+`web-org-roam-graph` (org-roam-ui's interactive graph in a buffer).
+Webview buffers survive hot reloads: session-reload saves the URL
+plus an optional `web-webview-revive-function` — org-roam-ui's
+server dies with the old Emacs, so the graph buffer revives by
+re-running `web-org-roam-graph`, which restarts it.
+
+Iframes are pooled by URL on the client: when no visible window
+shows a webview (buffer buried, tab switched), its iframe is
+`display:none`-hidden, not unmounted, so the embedded app keeps
+running like a background browser tab and reappears without a
+reload.  Least-recently-visible entries are evicted past a small
+cap; only eviction (or a page reload) restarts the app.
+
+Input note: keys/clicks inside the iframe belong to the embedded
+page (panning the graph); click Emacs text or a mode line to hand
+input back.
+
+Related C fix: `tty_frame_geometry` (term.c) used to `emacs_abort`
+via the `FRAME_TTY` macro when any Lisp called
+`frame-geometry`/`frame-edges` on a web frame (frame.el's dispatch
+falls through to tty-frame-* for unknown window systems) — opening
+the graph crashed Emacs through this path.  Web frames now take the
+tty geometry path, which only uses generic frame fields.
 
 ## Electron
 
@@ -166,6 +229,79 @@ compile its module) — the window shows the prompt; startup proceeds
 once answered.  `/tmp/emacs-session-reload-status` records how far the
 wrapper's init got, which is how you debug a headless instance.
 
+## Rendering-artifact postmortem (2026-06-12)
+
+One day of artifacts — duplicate blocks, ghost lines, half-window
+blanking, scroll clipping — all traced to a single architectural
+tension: **the client keys lines by Emacs matrix row index but paints
+them at `pixel_y`**, and partial updates silently assume the two
+never diverge.  They diverge under variable-height rows (images) and
+under scrolls.  Record of what was tried, in order:
+
+1. ~~Drop `pixel_y` from scroll-moved lines, let "the following
+   frame_update" re-supply it~~ — **failed**: moved rows are exactly
+   the rows Emacs never resends (that's the point of the scroll
+   optimization).  Fallback `row*charH` painted ghost copies at
+   compacted positions.
+2. Scroll messages now carry `delta_px` (`run->desired_y -
+   current_y`, webterm.c `web_scroll_run`) and the client translates
+   moved lines' `pixel_y`.  Necessary but not sufficient.
+3. ~~Per-update eviction (fresh rows evict overlapping stale
+   rows)~~ — **failed for two paths**: rows arriving in the same
+   flush protect each other, and scroll translations create overlaps
+   with rows that were never "fresh".  Interleaved
+   content-vs-empty-row families recurred when scrolling.
+4. Within-flush inconsistency fixed server-side: every captured line
+   gets a sequence stamp (`json_line.seq`); at flush, the older of
+   any pixel-overlapping pair is dropped (a mid-cycle scroll reuses
+   row indices, so the early capture is stale — the matrix never
+   truly holds overlapping rows).
+5. **Final client invariant**: `_dedupeOverlaps` (state.js) runs
+   after *every* mutation — frame_update merge and scroll translation
+   alike — walking lines in pixel order and dropping the lower-gen of
+   any overlapping pair.  Evicted lines push their exact strip onto
+   the window's `vacated` list, which the renderer erases *at those
+   pixels* (the row-index fallback erases the wrong place).
+6. Half-window blanking ("text clips halfway"): the renderer "erases"
+   data-less row indices at `row*charH` **every frame** (gen -1 is
+   never cached).  With client charH measured at 19 (fonts not loaded
+   at measure time) vs Emacs's 22px rows, indices 28-42 erased pixels
+   532-837 — permanently stomping the lower half of real content.
+   Fix: erase passes skip strips occupied by any pixel-positioned
+   line.  *Do not reintroduce unconditional erases keyed by row
+   index.*
+7. Mode-line flicker: the partially-visible bottom row painted into
+   the mode-line strip and was overpainted a moment later; a
+   desynchronized canvas presents mid-sequence.  Text rows now clip
+   at the mode-line top (drawLine/drawLineBody).
+
+Still open: the font-metric skew itself — re-measure on
+`document.fonts.ready` and re-send `font_metrics`/`resize` if
+changed.  The invariants above make the skew harmless to row
+placement, but cursor pixel math and the atlas still use the early
+measurement.
+
+Debugging tools that cracked it (use them first next time):
+- Canvas snapshot through the debug REPL: draw the canvas into a
+  640px offscreen, `toDataURL`, decode locally — ground truth of what
+  the user sees, without touching their screen.
+- `getImageData` lit-pixel band sampling to test "is anything painted
+  at row N" without eyeballing.
+- `window._renderer` (exposed by Frame.jsx) for gen-cache and
+  geometry introspection; `_state.windows` dumps for the line maps.
+- The reliable repro was `dashboard-refresh-buffer` with the PNG
+  banner (image row shifts every row's pixel position).
+
+Related fixes the same day: cursor column math (x is already
+text-area-relative — subtracting the window origin pushed cursors
+off-screen in side-by-side splits); `dpyinfo->highlight_frame` was
+never set so every cursor rendered hollow; the proxy now replays
+cached `font_metrics`/`resize`/`focus` to a (re)attaching Emacs —
+without that, a fresh instance sat at 80x25, unfocused, cursorless.
+`tty_frame_geometry` aborted (via the FRAME_TTY macro) when any Lisp
+called `frame-geometry` on a web frame; web frames now take that path
+legitimately.
+
 ## Known limitations / future work
 
 (tracked in todos.md)
@@ -181,8 +317,9 @@ wrapper's init got, which is how you debug a headless instance.
 - Shared-global `setq` races between a detached command and foreground
   editing are possible — the per-thread isolation covers let-bindings,
   buffers, match-data only.
-- web-term/claude-in-Emacs terminal: lisp/web-term.el is a frontend to
-  a `web-vterm-*` libvterm C layer that does not exist yet.
+- web-term: no scrollback yet (the buffer holds only the live screen;
+  tmux history covers it via its own copy mode), no mouse reporting,
+  and wide-char cursor column→buffer position math is approximate.
 
 ## Why not another runtime (Guile/Chez)
 

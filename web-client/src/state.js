@@ -31,7 +31,10 @@ export class FrameState {
   }
 
   _notify (immediate) {
-    for (const fn of this._listeners) fn(immediate);
+    /* A listener that throws must not starve the listeners after it.  */
+    for (const fn of this._listeners) {
+      try { fn(immediate); } catch (e) { console.error('state listener:', e); }
+    }
   }
 
   dispatch (msg) {
@@ -135,6 +138,9 @@ export class FrameState {
     if (msg.windows) {
       for (const wdata of msg.windows) {
         const old = this.windows.get(wdata.id);
+        /* Pixel strips vacated by evicted ghost lines; the renderer
+           erases and then empties this list.  */
+        const vacated = old && old.vacated ? old.vacated : [];
         /* Only copy lines Map if we have new line data.  */
         const lines = wdata.lines && wdata.lines.length > 0
           ? (old ? new Map(old.lines) : new Map())
@@ -144,12 +150,12 @@ export class FrameState {
 
         if (wdata.lines) {
           for (const lineData of wdata.lines) {
-            let row = lineData.row;
+            const row = lineData.row;
             if (lineData.mode_line) {
-              /* Mode line always goes at the last row.  Remove any
-                 stale mode_line entries at other positions first.  */
-              const h = wdata.h || (old && old.h) || 50;
-              row = h - 1;
+              /* Trust the matrix vpos — it can be h itself when a
+                 partially-visible text row sits above the mode line.
+                 Rendering pins mode lines to the window bottom by
+                 flag, not index.  Drop stale entries elsewhere.  */
               for (const [r, ld] of lines) {
                 if (ld.mode_line && r !== row) lines.delete(r);
               }
@@ -171,10 +177,21 @@ export class FrameState {
 
         const newH = wdata.h ?? (old ? old.h : 50);
 
-        /* Prune lines beyond the new window height.  */
-        for (const row of lines.keys()) {
-          if (row >= newH) lines.delete(row);
+        /* Prune lines beyond the new window height.  The mode line
+           may legitimately sit at index newH (after a partial row),
+           so it is only pruned past that.  */
+        for (const [row, ld] of lines) {
+          if (ld.mode_line ? row > newH : row >= newH) lines.delete(row);
         }
+
+        /* Pixel-overlap invariant: lines are keyed by matrix row
+           index but PAINTED at pixel_y, and the index<->pixel mapping
+           shifts under scrolls and variable-height rows — every merge
+           path (partial update, scroll translation, cross-flush
+           staleness) can leave two lines claiming the same pixels,
+           which renders as ghost copies or content stomped by stale
+           empties.  Enforce it globally after each merge.  */
+        this._dedupeOverlaps(lines, vacated);
 
         this.windows.set(wdata.id, {
           id: wdata.id,
@@ -192,6 +209,16 @@ export class FrameState {
           menuBar: wdata.menu_bar !== undefined
             ? !!wdata.menu_bar
             : (old ? old.menuBar : false),
+          /* Embedded browser view: URL overlaid as an iframe over the
+             window body.  Emacs always sends the field ('' = none), so
+             absence means "window not in this update — keep".  */
+          webview: wdata.webview !== undefined
+            ? wdata.webview
+            : (old ? old.webview : ''),
+          webviewPh: wdata.webview_ph !== undefined
+            ? wdata.webview_ph
+            : (old ? old.webviewPh : 0),
+          vacated,
           gen,
         });
       }
@@ -206,6 +233,29 @@ export class FrameState {
     }
 
     this._notify(true);
+  }
+
+  /* Enforce: no two non-mode-line lines overlap in pixel space.
+     Walk lines sorted by pixel_y; on overlap keep the newer line
+     (higher gen) and record the loser's strip in VACATED so the
+     renderer erases its pixels where they actually are.  */
+  _dedupeOverlaps (lines, vacated) {
+    const sorted = [...lines.entries()]
+      .filter(([, l]) => !l.mode_line && Number.isFinite(l.pixel_y))
+      .sort((a, b) => a[1].pixel_y - b[1].pixel_y);
+    let prev = null;
+    for (const ent of sorted) {
+      if (prev
+          && ent[1].pixel_y < prev[1].pixel_y + (prev[1].pixel_h || 1)) {
+        const loser = (ent[1].gen || 0) >= (prev[1].gen || 0) ? prev : ent;
+        const winner = loser === prev ? ent : prev;
+        lines.delete(loser[0]);
+        vacated.push({ y: loser[1].pixel_y, h: loser[1].pixel_h || 1 });
+        prev = winner;
+      } else {
+        prev = ent;
+      }
+    }
   }
 
   _applyScroll (msg) {
@@ -236,13 +286,22 @@ export class FrameState {
 
     for (const [newRow, line] of moved) {
       if (newRow >= 0 && newRow < old.h) {
-        /* Drop pixel_y/pixel_h — the frame_update that follows in
-           the same flush batch will provide correct values.  Using
-           stale pixel_y after a scroll causes misalignment when
-           Emacs pixel units differ slightly from browser charH.  */
         const movedLine = { ...line, row: newRow, gen };
-        delete movedLine.pixel_y;
-        delete movedLine.pixel_h;
+        if (Number.isInteger(msg.delta_px)
+            && Number.isFinite(movedLine.pixel_y)) {
+          /* Moved rows are NOT resent by Emacs (that is the point of
+             the scroll optimization), so translate their pixel
+             position by the block's pixel shift.  Falling back to
+             row*charH here is wrong whenever row heights vary
+             (images): the moved block then rendered as a ghost copy
+             at compacted positions.  */
+          movedLine.pixel_y = movedLine.pixel_y + msg.delta_px;
+        } else {
+          /* No pixel delta available (older Emacs): drop pixel info
+             and hope a following frame_update re-supplies it.  */
+          delete movedLine.pixel_y;
+          delete movedLine.pixel_h;
+        }
         lines.set(newRow, movedLine);
       }
     }
@@ -259,11 +318,16 @@ export class FrameState {
 
     this.pendingScrolls.push({ windowId: msg.window_id });
 
+    /* Translation can land moved rows on unmoved ones.  */
+    const vacated = old.vacated || [];
+    this._dedupeOverlaps(lines, vacated);
+
     this.windows.set(msg.window_id, {
       ...old,
       lines,
       cursor,
       cursorGen: gen,
+      vacated,
       gen,
     });
 

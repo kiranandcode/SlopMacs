@@ -348,7 +348,46 @@ export class FrameRenderer {
     ctx.rect(x, y, w, h);
     ctx.clip();
 
-    for (let row = 0; row < win.h; row++) {
+    /* Erase pixel strips vacated by evicted ghost lines (see
+       state.js pixel-overlap eviction); their painted pixels live at
+       their old pixel_y, which no surviving line is keyed to.  Fresh
+       rows painted below will cover most of these — this catches the
+       slivers they don't.  */
+    if (win.vacated && win.vacated.length > 0) {
+      ctx.fillStyle = state.defaultBg;
+      for (const v of win.vacated) {
+        ctx.fillRect(x, y + v.y, w, v.h);
+      }
+      win.vacated.length = 0;
+      /* The erased strips may cut into rows the gen-cache thinks are
+         already painted — force their repaint this pass.  */
+      lineGens.clear();
+    }
+
+    /* Iterate through win.h INCLUSIVE: the mode line's matrix vpos is
+       h when a partially-visible text row precedes it.  Drawing it
+       last also paints it over that partial row's overlap, matching
+       how real Emacs clips the partial row at the mode line.  */
+    let mlRow = -1;
+    for (const [r, ld] of win.lines) {
+      if (ld.mode_line) { mlRow = r; break; }
+    }
+    const mlTop = h - m.charH;
+
+    /* Pixel intervals occupied by real (pixel-positioned) lines.  A
+       row index with no line data gets an erase pass at the fallback
+       position row*charH — but that position is meaningless when the
+       index<->pixel mapping diverges (image rows, or charH measured
+       differently than Emacs's line height), and blindly erasing
+       there permanently stomps real content drawn at those pixels.  */
+    const occupied = [];
+    for (const ld of win.lines.values()) {
+      if (!ld.mode_line && Number.isFinite(ld.pixel_y)) {
+        occupied.push([ld.pixel_y, ld.pixel_y + (ld.pixel_h || m.charH)]);
+      }
+    }
+
+    for (let row = 0; row <= win.h; row++) {
       const lineData = win.lines.get(row);
       const lineGen = lineData ? lineData.gen : -1;
       const prevGen = lineGens.get(row);
@@ -356,8 +395,28 @@ export class FrameRenderer {
       /* Skip unchanged lines.  */
       if (!full && lineGen === prevGen && lineGen !== -1) continue;
 
+      if (!lineData) {
+        /* Erase pass for a missing row: only if no real line owns
+           any part of that pixel strip.  */
+        const top = row * m.charH;
+        const bot = top + m.charH;
+        let hit = false;
+        for (const [a, b] of occupied) {
+          if (top < b && bot > a) { hit = true; break; }
+        }
+        if (hit) continue;
+      }
+
       this.drawLine(win, row, state);
       lineGens.set(row, lineGen);
+
+      /* A redrawn row that bleeds into the mode-line strip (the
+         partially-visible last row) must not leave a stale mode line:
+         invalidate it so this same pass repaints it.  */
+      if (lineData && !lineData.mode_line && mlRow > row) {
+        const geom = this.lineGeometry(win, row, lineData);
+        if (geom.rowY + geom.height > mlTop) lineGens.delete(mlRow);
+      }
     }
 
     this.drawImages(win, state, visibleWidgets);
@@ -443,6 +502,42 @@ export class FrameRenderer {
     const lineData = win.lines.get(row);
     const { x, y, width, height } = this.lineGeometry(win, row, lineData);
 
+    /* Text rows must never paint into the mode-line strip: the
+       partially-visible bottom row overlaps it, and painting it first
+       then overpainting with the mode line can present mid-sequence
+       on a desynchronized canvas as visible mode-line flicker.  Clip
+       the row at the mode-line top instead.  */
+    if (!lineData || !lineData.mode_line) {
+      let mlPresent = false;
+      for (const ld of win.lines.values()) {
+        if (ld.mode_line) { mlPresent = true; break; }
+      }
+      if (mlPresent) {
+        const winY = win.py !== undefined ? win.py : Math.round(win.y * m.charH);
+        const winH = win.ph !== undefined ? win.ph : Math.ceil(win.h * m.charH);
+        const mlTop = winY + winH - m.charH;
+        if (y >= mlTop) return;
+        if (y + height > mlTop) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(x, y, width, mlTop - y);
+          ctx.clip();
+          try {
+            this.drawLineBody(win, state, lineData, x, y, width, height);
+          } finally {
+            ctx.restore();
+          }
+          return;
+        }
+      }
+    }
+    this.drawLineBody(win, state, lineData, x, y, width, height);
+  }
+
+  drawLineBody (win, state, lineData, x, y, width, height) {
+    const m = this.metrics;
+    const ctx = this.ctx;
+
     const baseBg = lineData && lineData.mode_line && lineData.runs?.[0]
       ? state.getFace(lineData.runs[0].face_id).bg
       : state.defaultBg;
@@ -521,8 +616,9 @@ export class FrameRenderer {
     const winH = win.ph !== undefined ? win.ph : Math.ceil(win.h * m.charH);
     const widgets = window._widgets;
 
-    /* Compute the window content area (exclude modeline).  */
-    const lastLine = win.lines.get(win.h - 1);
+    /* Compute the window content area (exclude modeline).  The mode
+       line's index is h or h-1 depending on partial-row presence.  */
+    const lastLine = win.lines.get(win.h) || win.lines.get(win.h - 1);
     const contentH = (lastLine && lastLine.mode_line) ? winH - m.charH : winH;
     const winRight = winX + winW;
     const winBottom = winY + contentH;

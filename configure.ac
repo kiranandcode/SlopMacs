@@ -3929,10 +3929,21 @@ AC_SUBST([PGTK_OBJ])
 AC_SUBST([PGTK_LIBS])
 
 WEB_OBJ=
+HAVE_VTERM=no
 if test "$window_system" = "web"; then
   WEB_OBJ="webterm.o webfns.o webfont.o web_event_loop.o"
+  dnl libvterm powers the web-vterm-* terminal-emulator primitives
+  dnl (lisp/web-term.el).  Optional: the web backend builds without it.
+  EMACS_CHECK_MODULES([VTERM], [vterm], [HAVE_VTERM=yes], [HAVE_VTERM=no])
+  if test "$HAVE_VTERM" = yes; then
+    AC_DEFINE([HAVE_VTERM], [1],
+      [Define to 1 if libvterm is available for the web backend.])
+    WEB_OBJ="$WEB_OBJ webvterm.o"
+  fi
 fi
 AC_SUBST([WEB_OBJ])
+AC_SUBST([VTERM_CFLAGS])
+AC_SUBST([VTERM_LIBS])
 
 AC_CHECK_FUNCS([malloc_trim])
 
