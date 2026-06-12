@@ -18,7 +18,7 @@ shift
 RELOAD_MARKER="/tmp/emacs-reload-requested"
 
 while true; do
-  rm -f "$RELOAD_MARKER"
+  rm -f "$RELOAD_MARKER" /tmp/emacs-session-reload-status
   "$EMACS_BIN" --eval "(let ((ok (ignore-errors (require 'session-reload nil t)))) (when ok (session-reload-init)) (ignore-errors (with-temp-file \"/tmp/emacs-session-reload-status\" (insert (format \"require=%S library=%S server=%S name=%S\" ok (locate-library \"session-reload\") (and (boundp 'server-process) (processp server-process)) (and (boundp 'server-name) server-name))))))" "$@"
   code=$?
   if [ "$code" = "42" ] || [ -f "$RELOAD_MARKER" ]; then
