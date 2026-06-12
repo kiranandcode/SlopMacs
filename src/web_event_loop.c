@@ -451,6 +451,16 @@ web_parse_event (const char *line, int line_len, struct web_event *event)
     }
   if (strcmp (type, "interrupt") == 0)
     {
+      /* C-g must work while the evaluator is busy, but the event
+	 queue is only drained when it reads input -- so act here, on
+	 the I/O thread, by raising SIGINT (delivered to the main
+	 thread, whose handler just sets Vquit_flag; the evaluator
+	 quits at its next quit check).  This path is used when the
+	 proxy runs in --emacs-port mode and forwards interrupts as
+	 data; in legacy --emacs-fd mode the proxy SIGINTs us directly
+	 and this line is never parsed.  Still enqueue the event as a
+	 fallback for the synchronous (non-threaded) build.  */
+      kill (getpid (), SIGINT);
       event->type = WEB_EVT_INTERRUPT;
       return true;
     }

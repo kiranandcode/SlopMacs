@@ -30,6 +30,11 @@
 /* Global state.  */
 static struct ws_server server;
 static int emacs_fd = -1;          /* fd to talk to Emacs (or stdin) */
+static int emacs_listen_fd = -1;   /* listener for Emacs to (re)attach
+                                      over TCP (--emacs-port).  In this
+                                      mode the proxy outlives Emacs:
+                                      hot reloads reconnect here and
+                                      the browser keeps its WebSocket. */
 static volatile sig_atomic_t running = 1;
 static int active_input_fd = -1;   /* only forward input from this client fd */
 
@@ -94,8 +99,12 @@ on_client_message (struct ws_server *srv, int client_idx,
   int client_fd = (client_idx >= 0 && client_idx < srv->num_clients)
     ? srv->clients[client_idx].fd : -1;
 
-  /* Check for interrupt message — always process.  */
-  if (len > 10 && memmem (data, len, "\"interrupt\"", 11))
+  /* Check for interrupt message — always process.  In legacy
+     --emacs-fd mode our parent IS Emacs, so deliver SIGINT directly.
+     In --emacs-port mode the parent is the supervisor (Electron), so
+     forward the interrupt as data; Emacs's I/O thread acts on it.  */
+  if (len > 10 && memmem (data, len, "\"interrupt\"", 11)
+      && emacs_listen_fd < 0)
     {
       pid_t ppid = getppid ();
       if (ppid > 1)
@@ -118,7 +127,11 @@ on_client_message (struct ws_server *srv, int client_idx,
   if (client_fd != active_input_fd && active_input_fd >= 0)
     return;
 
-  /* Forward to Emacs — ensure newline termination.  */
+  /* Forward to Emacs — ensure newline termination.  While no Emacs is
+     attached in --emacs-port mode, drop input instead of spraying it
+     into our stdout/log.  */
+  if (emacs_listen_fd >= 0 && emacs_fd < 0)
+    return;
   int out_fd = (emacs_fd >= 0) ? emacs_fd : STDOUT_FILENO;
   size_t written = 0;
   while (written < len)
@@ -273,10 +286,19 @@ event_loop (void)
   EV_SET (&changes[nchanges++], server.listen_fd, EVFILT_READ,
           EV_ADD | EV_ENABLE, 0, 0, NULL);
 
-  int in_fd = (emacs_fd >= 0) ? emacs_fd : STDIN_FILENO;
-  fcntl (in_fd, F_SETFL, fcntl (in_fd, F_GETFL) | O_NONBLOCK);
-  EV_SET (&changes[nchanges++], in_fd, EVFILT_READ,
-          EV_ADD | EV_ENABLE, 0, 0, NULL);
+  int in_fd = -1;
+  if (emacs_listen_fd >= 0)
+    /* Emacs attaches (and re-attaches across hot reloads) via the
+       listener; no input fd until it connects.  */
+    EV_SET (&changes[nchanges++], emacs_listen_fd, EVFILT_READ,
+            EV_ADD | EV_ENABLE, 0, 0, NULL);
+  else
+    {
+      in_fd = (emacs_fd >= 0) ? emacs_fd : STDIN_FILENO;
+      fcntl (in_fd, F_SETFL, fcntl (in_fd, F_GETFL) | O_NONBLOCK);
+      EV_SET (&changes[nchanges++], in_fd, EVFILT_READ,
+              EV_ADD | EV_ENABLE, 0, 0, NULL);
+    }
 
   /* Register debug listener if available.  */
   if (debug_listen_fd >= 0)
@@ -315,6 +337,35 @@ event_loop (void)
                   kevent (kq, &ev, 1, NULL, 0, NULL);
                   /* Newest client becomes the active input source.  */
                   active_input_fd = server.clients[idx].fd;
+                }
+            }
+          else if (emacs_listen_fd >= 0 && fd == emacs_listen_fd)
+            {
+              /* Emacs (re)attaching over TCP.  Only one at a time;
+                 a new connection replaces the old.  */
+              int newfd = accept (emacs_listen_fd, NULL, NULL);
+              if (newfd >= 0)
+                {
+                  struct kevent ev;
+                  if (emacs_fd >= 0)
+                    {
+                      EV_SET (&ev, emacs_fd, EVFILT_READ, EV_DELETE,
+                              0, 0, NULL);
+                      kevent (kq, &ev, 1, NULL, 0, NULL);
+                      close (emacs_fd);
+                    }
+                  emacs_fd = newfd;
+                  in_fd = newfd;
+                  emacs_buf_len = 0;
+                  fcntl (emacs_fd, F_SETFL,
+                         fcntl (emacs_fd, F_GETFL) | O_NONBLOCK);
+                  EV_SET (&ev, emacs_fd, EVFILT_READ,
+                          EV_ADD | EV_ENABLE, 0, 0, NULL);
+                  kevent (kq, &ev, 1, NULL, 0, NULL);
+                  fprintf (stderr, "Emacs attached\n");
+                  /* Ask the (possibly fresh) Emacs for a full frame so
+                     connected browser clients repaint immediately.  */
+                  request_redraw ();
                 }
             }
           else if (fd == debug_listen_fd)
@@ -363,7 +414,7 @@ event_loop (void)
                   fprintf (stderr, "Debug client disconnected\n");
                 }
             }
-          else if (fd == in_fd)
+          else if (in_fd >= 0 && fd == in_fd)
             {
               /* Data from Emacs.  */
               ssize_t n = read (in_fd, emacs_buf + emacs_buf_len,
@@ -375,8 +426,26 @@ event_loop (void)
                 }
               else if (n == 0)
                 {
-                  fprintf (stderr, "Emacs fd closed\n");
-                  running = 0;
+                  if (emacs_listen_fd >= 0)
+                    {
+                      /* Emacs is restarting (hot reload); keep the
+                         browser connected and await re-attachment.  */
+                      struct kevent ev;
+                      EV_SET (&ev, in_fd, EVFILT_READ, EV_DELETE,
+                              0, 0, NULL);
+                      kevent (kq, &ev, 1, NULL, 0, NULL);
+                      close (in_fd);
+                      emacs_fd = -1;
+                      in_fd = -1;
+                      emacs_buf_len = 0;
+                      fprintf (stderr,
+                               "Emacs detached; awaiting reconnect\n");
+                    }
+                  else
+                    {
+                      fprintf (stderr, "Emacs fd closed\n");
+                      running = 0;
+                    }
                 }
             }
           else
@@ -434,11 +503,23 @@ event_loop (void)
   ev.data.fd = server.listen_fd;
   epoll_ctl (epfd, EPOLL_CTL_ADD, server.listen_fd, &ev);
 
-  int in_fd = (emacs_fd >= 0) ? emacs_fd : STDIN_FILENO;
-  fcntl (in_fd, F_SETFL, fcntl (in_fd, F_GETFL) | O_NONBLOCK);
-  ev.events = EPOLLIN;
-  ev.data.fd = in_fd;
-  epoll_ctl (epfd, EPOLL_CTL_ADD, in_fd, &ev);
+  int in_fd = -1;
+  if (emacs_listen_fd >= 0)
+    {
+      /* Emacs attaches (and re-attaches across hot reloads) via the
+         listener; no input fd until it connects.  */
+      ev.events = EPOLLIN;
+      ev.data.fd = emacs_listen_fd;
+      epoll_ctl (epfd, EPOLL_CTL_ADD, emacs_listen_fd, &ev);
+    }
+  else
+    {
+      in_fd = (emacs_fd >= 0) ? emacs_fd : STDIN_FILENO;
+      fcntl (in_fd, F_SETFL, fcntl (in_fd, F_GETFL) | O_NONBLOCK);
+      ev.events = EPOLLIN;
+      ev.data.fd = in_fd;
+      epoll_ctl (epfd, EPOLL_CTL_ADD, in_fd, &ev);
+    }
 
   /* Register debug listener if available.  */
   if (debug_listen_fd >= 0)
@@ -476,6 +557,30 @@ event_loop (void)
                   epoll_ctl (epfd, EPOLL_CTL_ADD,
                              server.clients[idx].fd, &cev);
                   active_input_fd = server.clients[idx].fd;
+                }
+            }
+          else if (emacs_listen_fd >= 0 && fd == emacs_listen_fd)
+            {
+              /* Emacs (re)attaching over TCP.  */
+              int newfd = accept (emacs_listen_fd, NULL, NULL);
+              if (newfd >= 0)
+                {
+                  struct epoll_event eev;
+                  if (emacs_fd >= 0)
+                    {
+                      epoll_ctl (epfd, EPOLL_CTL_DEL, emacs_fd, NULL);
+                      close (emacs_fd);
+                    }
+                  emacs_fd = newfd;
+                  in_fd = newfd;
+                  emacs_buf_len = 0;
+                  fcntl (emacs_fd, F_SETFL,
+                         fcntl (emacs_fd, F_GETFL) | O_NONBLOCK);
+                  eev.events = EPOLLIN;
+                  eev.data.fd = emacs_fd;
+                  epoll_ctl (epfd, EPOLL_CTL_ADD, emacs_fd, &eev);
+                  fprintf (stderr, "Emacs attached\n");
+                  request_redraw ();
                 }
             }
           else if (fd == debug_listen_fd)
@@ -517,7 +622,7 @@ event_loop (void)
                   fprintf (stderr, "Debug client disconnected\n");
                 }
             }
-          else if (fd == in_fd)
+          else if (in_fd >= 0 && fd == in_fd)
             {
               ssize_t n = read (in_fd, emacs_buf + emacs_buf_len,
                                 EMACS_BUF_SIZE - emacs_buf_len);
@@ -528,8 +633,23 @@ event_loop (void)
                 }
               else if (n == 0)
                 {
-                  fprintf (stderr, "Emacs fd closed\n");
-                  running = 0;
+                  if (emacs_listen_fd >= 0)
+                    {
+                      /* Emacs is restarting (hot reload); keep the
+                         browser connected and await re-attachment.  */
+                      epoll_ctl (epfd, EPOLL_CTL_DEL, in_fd, NULL);
+                      close (in_fd);
+                      emacs_fd = -1;
+                      in_fd = -1;
+                      emacs_buf_len = 0;
+                      fprintf (stderr,
+                               "Emacs detached; awaiting reconnect\n");
+                    }
+                  else
+                    {
+                      fprintf (stderr, "Emacs fd closed\n");
+                      running = 0;
+                    }
                 }
             }
           else
@@ -576,6 +696,8 @@ usage (const char *prog)
            "Usage: %s [OPTIONS]\n"
            "  --port PORT         WebSocket port (default: 8080)\n"
            "  --emacs-fd FD       File descriptor to communicate with Emacs\n"
+           "  --emacs-port PORT   Listen for Emacs to (re)attach over TCP;\n"
+           "                      the proxy then survives Emacs restarts\n"
            "  --help              Show this help\n",
            prog);
 }
@@ -587,10 +709,22 @@ main (int argc, char **argv)
 
   for (int i = 1; i < argc; i++)
     {
+      int emacs_port = 0;
       if (strcmp (argv[i], "--port") == 0 && i + 1 < argc)
         port = atoi (argv[++i]);
       else if (strcmp (argv[i], "--emacs-fd") == 0 && i + 1 < argc)
         emacs_fd = atoi (argv[++i]);
+      else if (strcmp (argv[i], "--emacs-port") == 0 && i + 1 < argc
+               && (emacs_port = atoi (argv[++i])) > 0)
+        {
+          emacs_listen_fd = create_listener (emacs_port);
+          if (emacs_listen_fd < 0)
+            {
+              fprintf (stderr, "Cannot listen on emacs port %d\n", emacs_port);
+              return 1;
+            }
+          fprintf (stderr, "Awaiting Emacs on port %d\n", emacs_port);
+        }
       else if (strcmp (argv[i], "--help") == 0)
         {
           usage (argv[0]);

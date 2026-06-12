@@ -22,6 +22,9 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
 #include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -1924,7 +1927,14 @@ web_dispatch_event (struct web_display_info *dpyinfo, struct web_event *event,
       return 0;
 
     case WEB_EVT_INTERRUPT:
-      kill (getpid (), SIGINT);
+      /* In async mode the I/O thread already raised SIGINT at parse
+	 time (so C-g works while the evaluator is busy); avoid a
+	 second signal here, which would advance force_quit_count
+	 toward the emergency-escape threshold.  */
+#ifdef HAVE_PTHREAD
+      if (!web_async_active_p ())
+#endif
+	kill (getpid (), SIGINT);
       return 0;
 
     case WEB_EVT_CLIPBOARD:
@@ -3347,6 +3357,53 @@ web_term_init (void)
   /* Initialize fringe bitmaps.  */
   gui_init_fringe (&web_redisplay_interface);
 
+  /* If EMACS_WEB_EMACS_PORT is set, a supervisor (e.g. the Electron
+     app) owns a long-lived proxy; connect to it over TCP instead of
+     forking our own.  The proxy outlives Emacs restarts, so the
+     browser/Electron client keeps its WebSocket across hot reloads
+     (see lisp/session-reload.el).  */
+  int tcp_fd = -1;
+  const char *eport_str = getenv ("EMACS_WEB_EMACS_PORT");
+  if (eport_str && atoi (eport_str) > 0)
+    {
+      int eport = atoi (eport_str);
+      for (int attempt = 0; attempt < 50 && tcp_fd < 0; attempt++)
+	{
+	  tcp_fd = socket (AF_INET, SOCK_STREAM, 0);
+	  if (tcp_fd < 0)
+	    break;
+	  struct sockaddr_in addr;
+	  memset (&addr, 0, sizeof addr);
+	  addr.sin_family = AF_INET;
+	  addr.sin_port = htons (eport);
+	  addr.sin_addr.s_addr = htonl (INADDR_LOOPBACK);
+	  if (connect (tcp_fd, (struct sockaddr *) &addr, sizeof addr) < 0)
+	    {
+	      close (tcp_fd);
+	      tcp_fd = -1;
+	      usleep (100000);
+	    }
+	}
+      if (tcp_fd >= 0)
+	{
+	  int one = 1;
+	  setsockopt (tcp_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+	  fprintf (stderr, "web_term_init: attached to proxy on port %d\n",
+		   eport);
+	}
+      else
+	fprintf (stderr,
+		 "web_term_init: no proxy on port %s; forking our own\n",
+		 eport_str);
+    }
+
+  if (tcp_fd >= 0)
+    {
+      dpyinfo->proxy_fd = tcp_fd;
+      dpyinfo->proxy_pid = -1;
+    }
+  else
+    {
   /* Fork the display proxy process.  */
   int sv[2];
   if (socketpair (AF_UNIX, SOCK_STREAM, 0, sv) < 0)
@@ -3395,6 +3452,7 @@ web_term_init (void)
   close (sv[1]);
   dpyinfo->proxy_fd = sv[0];
   dpyinfo->proxy_pid = pid;
+    }
 
   /* Set proxy fd to non-blocking.  */
   fcntl (dpyinfo->proxy_fd, F_SETFL,

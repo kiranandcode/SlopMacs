@@ -106,7 +106,12 @@ skipped."
             (push (list (buffer-name) (buffer-string) (point) major-mode)
                   out)))
         (prin1 out (current-buffer)))))
-  ;; Visited files, point positions, buffer order.
+  ;; Visited files, point positions, buffer order.  A stale lock from
+  ;; a force-killed predecessor must not block or prompt.
+  (let ((lock (expand-file-name ".emacs.desktop.lock"
+                                session-reload-directory)))
+    (when (file-exists-p lock)
+      (ignore-errors (delete-file lock))))
   (let ((desktop-restore-frames nil)    ; window layout handled above
         (desktop-save-mode nil))
     (desktop-save session-reload-directory t))
@@ -173,9 +178,23 @@ another running Emacs) and restores a pending saved session, if
 any."
   (session-reload--paths)
   (require 'server)
+  ;; If the user's init started a server under the default name, move
+  ;; it: this instance must never own the socket the user's other
+  ;; Emacs sessions (and their emacsclient muscle memory) rely on.
+  (when (and (bound-and-true-p server-process)
+             (not (equal server-name session-reload-server-name)))
+    (ignore-errors (server-start t))    ; stop the misnamed server
+    (setq server-process nil))
   (unless (bound-and-true-p server-process)
     (setq server-name session-reload-server-name)
-    (ignore-errors (server-start)))
+    (if (server-running-p)
+        ;; A live instance already owns the socket; don't hijack it.
+        (message "session-reload: another %s server is running; \
+emacsclient control disabled for this instance" server-name)
+      ;; Remove a stale socket (e.g. left by a force-killed
+      ;; predecessor), then start.
+      (ignore-errors (server-force-delete))
+      (ignore-errors (server-start))))
   (when (file-exists-p session-reload--flag-file)
     (delete-file session-reload--flag-file)
     (session-reload--restore)))
