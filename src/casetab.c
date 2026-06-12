@@ -41,12 +41,12 @@ See `set-case-table' for more information on these data structures.  */)
 
   if (! CHAR_TABLE_P (object))
     return Qnil;
-  if (! EQ (XCHAR_TABLE (object)->purpose, Qcase_table))
+  if (! EQ (CT_PURPOSE (object), Qcase_table))
     return Qnil;
 
-  up = XCHAR_TABLE (object)->extras[0];
-  canon = XCHAR_TABLE (object)->extras[1];
-  eqv = XCHAR_TABLE (object)->extras[2];
+  up = CT_EXTRAS (object, 0);
+  canon = CT_EXTRAS (object, 1);
+  eqv = CT_EXTRAS (object, 2);
 
   return ((NILP (up) || CHAR_TABLE_P (up))
 	  && ((NILP (canon) && NILP (eqv))
@@ -117,9 +117,9 @@ set_case_table (Lisp_Object table, bool standard)
 
   check_case_table (table);
 
-  up = XCHAR_TABLE (table)->extras[0];
-  canon = XCHAR_TABLE (table)->extras[1];
-  eqv = XCHAR_TABLE (table)->extras[2];
+  up = CT_EXTRAS (table, 0);
+  canon = CT_EXTRAS (table, 1);
+  eqv = CT_EXTRAS (table, 2);
 
   if (NILP (up))
     {
@@ -176,8 +176,8 @@ set_case_table (Lisp_Object table, bool standard)
 static void
 set_canon (Lisp_Object case_table, Lisp_Object range, Lisp_Object elt)
 {
-  Lisp_Object up = XCHAR_TABLE (case_table)->extras[0];
-  Lisp_Object canon = XCHAR_TABLE (case_table)->extras[1];
+  Lisp_Object up = CT_EXTRAS (case_table, 0);
+  Lisp_Object canon = CT_EXTRAS (case_table, 1);
 
   if (FIXNATP (elt))
     Fset_char_table_range (canon, range, Faref (case_table, Faref (up, elt)));

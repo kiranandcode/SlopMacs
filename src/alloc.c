@@ -2145,6 +2145,28 @@ Lisp_Object
 make_clear_bool_vector (EMACS_INT nbits, bool clearit)
 {
   eassert (0 <= nbits && nbits <= BOOL_VECTOR_LENGTH_MAX);
+#ifdef HAVE_CHEZ
+  /* In Chez mode, bool vectors are 3-slot Chez vectors:
+     slot 0: tag (CHEZ_PVEC_BASE + PVEC_BOOL_VECTOR)
+     slot 1: nbits (fixnum)
+     slot 2: bytevector holding bit data  */
+  ptrdiff_t words = bool_vector_words (nbits);
+  ptrdiff_t word_bytes = words * sizeof (bits_word);
+  chez_ptr bv = Smake_bytevector (word_bytes, 0);
+  if (clearit)
+    memset (Sbytevector_data (bv), 0, word_bytes);
+  else if (nbits % BITS_PER_BITS_WORD != 0)
+    {
+      /* Clear padding at end.  */
+      bits_word *data = (bits_word *) Sbytevector_data (bv);
+      data[words - 1] = 0;
+    }
+  chez_ptr val = chez_Smake_vector (3, Sfalse);
+  Svector_set (val, 0, Sfixnum (CHEZ_PVEC_BASE + PVEC_BOOL_VECTOR));
+  Svector_set (val, 1, Sfixnum (nbits));
+  Svector_set (val, 2, bv);
+  return val;
+#else
   Lisp_Object val;
   ptrdiff_t words = bool_vector_words (nbits);
   ptrdiff_t word_bytes = words * sizeof (bits_word);
@@ -2163,6 +2185,7 @@ make_clear_bool_vector (EMACS_INT nbits, bool clearit)
   XSETPVECTYPESIZE (XVECTOR (val), PVEC_BOOL_VECTOR, 0, 0);
   p->size = nbits;
   return val;
+#endif
 }
 
 /* Return a newly allocated, uninitialized bool vector of size NBITS.  */
@@ -2321,6 +2344,29 @@ make_uninit_string (EMACS_INT length)
    which occupy NBYTES bytes.  If CLEARIT, clear its contents to null
    bytes; otherwise, the contents are uninitialized.  */
 
+#ifdef HAVE_CHEZ
+static Lisp_Object
+make_clear_multibyte_string (EMACS_INT nchars, EMACS_INT nbytes, bool clearit)
+{
+  if (nchars < 0)
+    emacs_abort ();
+  if (!nbytes)
+    return empty_multibyte_string;
+  /* Allocate a Chez bytevector with nbytes+1 for null termination.
+     Emacs strings must be null-terminated since SDATA is used as a C string
+     in many places (fprintf, strcmp, file operations, etc.).  */
+  chez_ptr bv = Smake_bytevector (nbytes + 1, 0);
+  if (clearit)
+    memset (Sbytevector_data (bv), 0, nbytes + 1);
+  Sbytevector_u8_set (bv, nbytes, 0);  /* ensure null terminator */
+  chez_ptr str = chez_Smake_vector (CHEZ_STR_SLOTS, Sfalse);
+  Svector_set (str, CHEZ_STR_SLOT_TAG, Sfixnum (CHEZ_STRING_TAG));
+  Svector_set (str, CHEZ_STR_SLOT_DATA, bv);
+  Svector_set (str, CHEZ_STR_SLOT_SIZEBYTE, Sfixnum (nbytes));
+  Svector_set (str, CHEZ_STR_SLOT_INTERVALS, Snil);
+  return str;
+}
+#else
 static Lisp_Object
 make_clear_multibyte_string (EMACS_INT nchars, EMACS_INT nbytes, bool clearit)
 {
@@ -2339,6 +2385,7 @@ make_clear_multibyte_string (EMACS_INT nchars, EMACS_INT nbytes, bool clearit)
   string_chars_consed += nbytes;
   return string;
 }
+#endif
 
 /* Return a multibyte Lisp_String set up to hold NCHARS characters
    which occupy NBYTES bytes.  */
@@ -2373,6 +2420,12 @@ void
 pin_string (Lisp_Object string)
 {
   eassert (STRINGP (string) && !STRING_MULTIBYTE (string));
+#ifdef HAVE_CHEZ
+  /* In Chez mode, lock the string's bytevector so GC won't move it.
+     This keeps the raw data pointer from Sbytevector_data() valid.  */
+  Slock_object (Svector_ref (string, CHEZ_STR_SLOT_DATA));
+  return;
+#endif
   struct Lisp_String *s = XSTRING (string);
   ptrdiff_t size = STRING_BYTES (s);
   unsigned char *data = s->u.s.data;
@@ -2477,6 +2530,13 @@ static struct Lisp_Float *float_free_list;
 
 /* Return a new float object with value FLOAT_VALUE.  */
 
+#ifdef HAVE_CHEZ
+Lisp_Object
+make_float (double float_value)
+{
+  return Sflonum (float_value);
+}
+#else
 Lisp_Object
 make_float (double float_value)
 {
@@ -2511,6 +2571,7 @@ make_float (double float_value)
   floats_consed++;
   return val;
 }
+#endif
 
 
 
@@ -2583,6 +2644,14 @@ static struct Lisp_Cons *cons_free_list;
 # define ASAN_UNPOISON_CONS(p) ((void) 0)
 #endif
 
+#ifdef HAVE_CHEZ
+/* In Chez mode, cons cells are GC'd by Chez.  */
+void
+free_cons (struct Lisp_Cons *ptr)
+{
+  (void) ptr;
+}
+#else
 /* Explicitly free a cons cell by putting it on the free-list.  */
 
 void
@@ -2595,7 +2664,16 @@ free_cons (struct Lisp_Cons *ptr)
   tally_consing (-nbytes);
   ASAN_POISON_CONS (ptr);
 }
+#endif
 
+#ifdef HAVE_CHEZ
+DEFUN ("cons", Fcons, Scons, 2, 2, 0,
+       doc: /* Create a new cons, give it CAR and CDR as components, and return it.  */)
+  (Lisp_Object car, Lisp_Object cdr)
+{
+  return chez_Scons (car, cdr);
+}
+#else
 DEFUN ("cons", Fcons, Scons, 2, 2, 0,
        doc: /* Create a new cons, give it CAR and CDR as components, and return it.  */)
   (Lisp_Object car, Lisp_Object cdr)
@@ -2632,6 +2710,7 @@ DEFUN ("cons", Fcons, Scons, 2, 2, 0,
   cons_cells_consed++;
   return val;
 }
+#endif
 
 /* Make a list of 1, 2, 3, 4 or 5 specified objects.  */
 
@@ -3190,11 +3269,20 @@ cleanup_vector (struct Lisp_Vector *vector)
 	  {
 	    eassert (h->index_bits > 0);
 	    xfree (h->index);
+#ifdef HAVE_CHEZ
+	    /* key_and_value is backed by a locked Chez vector.  */
+	    if (h->kv_chez && h->kv_chez != Sfalse)
+	      Sunlock_object (h->kv_chez);
+#else
 	    xfree (h->key_and_value);
+#endif
 	    xfree (h->next);
 	    xfree (h->hash);
-	    ptrdiff_t bytes = (h->table_size * (2 * sizeof *h->key_and_value
-						+ sizeof *h->hash
+	    ptrdiff_t bytes = (h->table_size * (
+#ifndef HAVE_CHEZ
+						2 * sizeof *h->key_and_value +
+#endif
+						sizeof *h->hash
 						+ sizeof *h->next)
 			       + hash_table_index_size (h) * sizeof *h->index);
 	    hash_table_allocated_bytes -= bytes;
@@ -3437,7 +3525,19 @@ allocate_pseudovector (int memlen, int lisplen,
 
   struct Lisp_Vector *v = allocate_vectorlike (memlen, false);
   /* Only the first LISPLEN slots will be traced normally by the GC.  */
+#ifdef HAVE_CHEZ
+  /* In Chez mode, Lisp_Object fields need Snil (0x26), but C pointer/int
+     fields need 0.  Fill Lisp slots with Snil, rest with zero.  */
+  {
+    for (int i = 0; i < lisplen; i++)
+      v->contents[i] = Snil;
+    if (zerolen > lisplen)
+      memset (&v->contents[lisplen], 0,
+              (zerolen - lisplen) * word_size);
+  }
+#else
   memclear (v->contents, zerolen * word_size);
+#endif
   XSETPVECTYPESIZE (v, tag, lisplen, memlen - lisplen);
   return v;
 }
@@ -3479,11 +3579,18 @@ each initialized to INIT.  */)
 {
   CHECK_FIXNAT (slots);
   EMACS_INT size = XFIXNAT (slots) + 1;
+#ifdef HAVE_CHEZ
+  chez_ptr v = chez_Smake_vector (size + 1, init);
+  Svector_set (v, 0, Sfixnum (CHEZ_PVEC_BASE + PVEC_RECORD));
+  Svector_set (v, 1, type);  /* AREF index 0 = slot 1 */
+  return v;
+#else
   struct Lisp_Vector *p = allocate_record (size);
   p->contents[0] = type;
   for (ptrdiff_t i = 1; i < size; i++)
     p->contents[i] = init;
   return make_lisp_ptr (p, Lisp_Vectorlike);
+#endif
 }
 
 
@@ -3495,9 +3602,19 @@ slots with shallow copies of the arguments.
 usage: (record TYPE &rest SLOTS) */)
   (ptrdiff_t nargs, Lisp_Object *args)
 {
+#ifdef HAVE_CHEZ
+  /* Create a pure Chez vector so AREF works correctly.
+     Slot 0 = PVEC_RECORD tag, slots 1..nargs = elements.  */
+  chez_ptr v = chez_Smake_vector (nargs + 1, Sfalse);
+  Svector_set (v, 0, Sfixnum (CHEZ_PVEC_BASE + PVEC_RECORD));
+  for (ptrdiff_t i = 0; i < nargs; i++)
+    Svector_set (v, i + 1, args[i]);
+  return v;
+#else
   struct Lisp_Vector *p = allocate_record (nargs);
   memcpy (p->contents, args, nargs * sizeof *args);
   return make_lisp_ptr (p, Lisp_Vectorlike);
+#endif
 }
 
 
@@ -3516,12 +3633,19 @@ See also the function `vector'.  */)
 Lisp_Object
 make_vector (ptrdiff_t length, Lisp_Object init)
 {
+#ifdef HAVE_CHEZ
+  /* Create a Chez vector: slot 0 = tag, slots 1..length = init.  */
+  chez_ptr v = chez_Smake_vector (length + 1, init);
+  Svector_set (v, 0, Sfixnum (CHEZ_VECTORLIKE_TAG));
+  return v;
+#else
   bool clearit = NIL_IS_ZERO && NILP (init);
   struct Lisp_Vector *p = allocate_clear_vector (length, clearit);
   if (!clearit)
     for (ptrdiff_t i = 0; i < length; i++)
       p->contents[i] = init;
   return make_lisp_ptr (p, Lisp_Vectorlike);
+#endif
 }
 
 DEFUN ("vector", Fvector, Svector, 0, MANY, 0,
@@ -3531,8 +3655,13 @@ usage: (vector &rest OBJECTS)  */)
   (ptrdiff_t nargs, Lisp_Object *args)
 {
   Lisp_Object val = make_uninit_vector (nargs);
+#ifdef HAVE_CHEZ
+  for (ptrdiff_t i = 0; i < nargs; i++)
+    ASET (val, i, args[i]);
+#else
   struct Lisp_Vector *p = XVECTOR (val);
   memcpy (p->contents, args, nargs * sizeof *args);
+#endif
   return val;
 }
 
@@ -3589,19 +3718,38 @@ usage: (make-closure PROTOTYPE &rest CLOSURE-VARS) */)
   ptrdiff_t nvars = nargs - 1;
   if (nvars > constsize)
     error ("Closure vars do not fit in constvec");
+#ifdef HAVE_CHEZ
+  /* In Chez mode, use XVECTOR_CONTENTS for memcpy-compatible access.  */
   Lisp_Object constvec = make_uninit_vector (constsize);
-  memcpy (XVECTOR (constvec)->contents, args + 1, nvars * word_size);
-  memcpy (XVECTOR (constvec)->contents + nvars,
-	  XVECTOR (proto_constvec)->contents + nvars,
+  memcpy (XVECTOR_CONTENTS (constvec), args + 1, nvars * word_size);
+  memcpy (XVECTOR_CONTENTS (constvec) + nvars,
+	  XVECTOR_CONTENTS (proto_constvec) + nvars,
+	  (constsize - nvars) * word_size);
+
+  /* Copy the prototype function, replacing the constant vector.  */
+  ptrdiff_t protosize = PVSIZE (protofun);
+  Lisp_Object fun = make_uninit_vector (protosize);
+  /* Copy tag from prototype (slot 0 has pvec type).  */
+  Svector_set (fun, 0, Svector_ref (protofun, 0));
+  memcpy (XVECTOR_CONTENTS (fun), XVECTOR_CONTENTS (protofun),
+	  protosize * word_size);
+  ASET (fun, CLOSURE_CONSTANTS, constvec);
+  return fun;
+#else
+  Lisp_Object constvec = make_uninit_vector (constsize);
+  memcpy (XVECTOR_CONTENTS (constvec), args + 1, nvars * word_size);
+  memcpy (XVECTOR_CONTENTS (constvec) + nvars,
+	  XVECTOR_CONTENTS (proto_constvec) + nvars,
 	  (constsize - nvars) * word_size);
 
   /* Return a copy of the prototype function with the new constant vector. */
   ptrdiff_t protosize = PVSIZE (protofun);
   struct Lisp_Vector *v = allocate_vectorlike (protosize, false);
   v->header = XVECTOR (protofun)->header;
-  memcpy (v->contents, XVECTOR (protofun)->contents, protosize * word_size);
+  memcpy (v->contents, XVECTOR_CONTENTS (protofun), protosize * word_size);
   v->contents[CLOSURE_CONSTANTS] = constvec;
   return make_lisp_ptr (v, Lisp_Vectorlike);
+#endif
 }
 
 
@@ -3650,13 +3798,37 @@ static int symbol_block_index = SYMBOL_BLOCK_SIZE;
 
 static struct Lisp_Symbol *symbol_free_list;
 
+#ifdef HAVE_CHEZ
+static void
+set_symbol_name (Lisp_Object sym, Lisp_Object name)
+{
+  Svector_set (sym, CHEZ_SYM_SLOT_NAME, name);
+}
+#else
 static void
 set_symbol_name (Lisp_Object sym, Lisp_Object name)
 {
   XBARE_SYMBOL (sym)->u.s.name = name;
 }
+#endif
 
 void
+#ifdef HAVE_CHEZ
+init_symbol (Lisp_Object val, Lisp_Object name)
+{
+  /* In Chez mode, symbols are Chez vectors.  Set fields via accessors.  */
+  set_symbol_name (val, name);
+  set_symbol_plist (val, Qnil);
+  SET_SYMBOL_VAL (val, Qunbound);
+  set_symbol_function (val, Qnil);
+  set_symbol_next (val, Sfalse);
+  /* Set flags: redirect=PLAINVAL, uninterned, no trapping, not special.  */
+  iptr flags = CHEZ_SYMBOL_TAG
+    | (SYMBOL_PLAINVAL << CHEZ_SYM_FLAG_REDIRECT_SHIFT)
+    | (SYMBOL_UNINTERNED << CHEZ_SYM_FLAG_INTERNED_SHIFT);
+  Svector_set (val, CHEZ_SYM_SLOT_TAG, Sfixnum (flags));
+}
+#else
 init_symbol (Lisp_Object val, Lisp_Object name)
 {
   struct Lisp_Symbol *p = XBARE_SYMBOL (val);
@@ -3671,7 +3843,21 @@ init_symbol (Lisp_Object val, Lisp_Object name)
   p->u.s.trapped_write = SYMBOL_UNTRAPPED_WRITE;
   p->u.s.declared_special = false;
 }
+#endif
 
+#ifdef HAVE_CHEZ
+DEFUN ("make-symbol", Fmake_symbol, Smake_symbol, 1, 1, 0,
+       doc: /* Return a newly allocated uninterned symbol whose name is NAME.
+Its value is void, and its function definition and property list are nil.  */)
+  (Lisp_Object name)
+{
+  CHECK_STRING (name);
+  Lisp_Object val = chez_Smake_vector (CHEZ_SYM_SLOTS, Sfalse);
+  init_symbol (val, name);
+  symbols_consed++;
+  return val;
+}
+#else
 DEFUN ("make-symbol", Fmake_symbol, Smake_symbol, 1, 1, 0,
        doc: /* Return a newly allocated uninterned symbol whose name is NAME.
 Its value is void, and its function definition and property list are nil.  */)
@@ -3709,6 +3895,7 @@ Its value is void, and its function definition and property list are nil.  */)
   symbols_consed++;
   return val;
 }
+#endif
 
 
 
@@ -3721,6 +3908,7 @@ make_misc_ptr (void *a)
   return make_lisp_ptr (p, Lisp_Vectorlike);
 }
 
+#ifndef HAVE_CHEZ
 /* Return a new symbol with position with the specified SYMBOL and POSITION. */
 Lisp_Object
 build_symbol_with_pos (Lisp_Object symbol, Lisp_Object position)
@@ -3735,6 +3923,7 @@ build_symbol_with_pos (Lisp_Object symbol, Lisp_Object position)
 
   return val;
 }
+#endif
 
 /* Return a new (deleted) overlay with PLIST.  */
 
@@ -4053,6 +4242,19 @@ set_string_marked (struct Lisp_String *s)
     XMARK_STRING (s);
 }
 
+#ifdef HAVE_CHEZ
+static bool
+symbol_marked_p (const struct Lisp_Symbol *s)
+{
+  (void) s;
+  return true;  /* Chez GC handles marking.  */
+}
+static void
+set_symbol_marked (struct Lisp_Symbol *s)
+{
+  (void) s;
+}
+#else
 static bool
 symbol_marked_p (const struct Lisp_Symbol *s)
 {
@@ -4069,6 +4271,7 @@ set_symbol_marked (struct Lisp_Symbol *s)
   else
     s->u.s.gcmarkbit = true;
 }
+#endif
 
 static bool
 interval_marked_p (INTERVAL i)
@@ -5401,6 +5604,13 @@ staticpro (Lisp_Object const *varaddress)
   if (staticidx >= NSTATICS)
     fatal ("NSTATICS too small; try increasing and recompiling Emacs.");
   staticvec[staticidx++] = varaddress;
+#ifdef HAVE_CHEZ
+  /* C zero-initializes static/global Lisp_Object to 0x0 which equals
+     Sfixnum(0), not Snil (0x26).  Initialize to Snil here so that
+     unset variables are properly nil rather than fixnum 0.  */
+  if (*varaddress == (Lisp_Object) 0)
+    *(Lisp_Object *) varaddress = Snil;
+#endif
 }
 
 
@@ -5778,6 +5988,11 @@ static inline bool mark_stack_empty_p (void);
 void
 garbage_collect (void)
 {
+#ifdef HAVE_CHEZ
+  /* In Chez mode, Chez Scheme's GC handles memory management.  */
+  return;
+#endif
+
   Lisp_Object tail, buffer;
   char stack_top_variable;
   bool message_p;
@@ -6809,6 +7024,7 @@ survives_gc_p (Lisp_Object obj)
 
 
 
+#ifndef HAVE_CHEZ
 NO_INLINE /* For better stack traces */
 static void
 sweep_conses (void)
@@ -7064,6 +7280,7 @@ sweep_symbols (void)
   gcstat.total_symbols = num_used;
   gcstat.total_free_symbols = num_free;
 }
+#endif /* !HAVE_CHEZ — sweep functions */
 
 /* Remove BUFFER's markers that are due to be swept.  This is needed since
    we treat BUF_MARKERS and markers's `next' field as weak pointers.  */
@@ -7099,6 +7316,13 @@ sweep_buffers (void)
     }
 }
 
+#ifdef HAVE_CHEZ
+/* In Chez mode, GC is handled by Chez Scheme.  */
+static void
+gc_sweep (void)
+{
+}
+#else
 /* Sweep: find all structures not marked, and free them.  */
 static void
 gc_sweep (void)
@@ -7114,6 +7338,7 @@ gc_sweep (void)
   pdumper_clear_marks ();
   check_string_bytes (!noninteractive);
 }
+#endif
 
 DEFUN ("memory-info", Fmemory_info, Smemory_info, 0, 0, 0,
        doc: /* Return a list of (TOTAL-RAM FREE-RAM TOTAL-SWAP FREE-SWAP).
@@ -7348,6 +7573,35 @@ verify_alloca (void)
 static void init_alloc_once_for_pdumper (void);
 
 void
+#ifdef HAVE_CHEZ
+init_alloc_once (void)
+{
+  /* In Chez mode, NIL_IS_ZERO is false (Snil=0x26, not 0).
+     The globals struct is zero-initialized by C, so all Lisp_Object
+     fields contain 0 which is invalid.  Set them all to Snil.  */
+  {
+    ptrdiff_t n_lisp_fields =
+      offsetof (struct emacs_globals, f_auto_save_interval)
+      / sizeof (Lisp_Object);
+    Lisp_Object *p = (Lisp_Object *) &globals;
+    for (ptrdiff_t i = 0; i < n_lisp_fields; i++)
+      p[i] = Snil;
+  }
+
+  gc_cons_threshold = GC_DEFAULT_THRESHOLD;
+  Vpurify_flag = Qt;
+  /* Initialize the old allocator's tracking tree — still used for
+     pseudovectors (buffers, obarrays, etc.) until fully migrated.  */
+  mem_init ();
+  init_vectors ();
+  /* In Chez mode, strings are allocated by Chez.
+     We still need empty_unibyte_string and empty_multibyte_string.  */
+  empty_unibyte_string = chez_make_string ("", 0);
+  Slock_object (empty_unibyte_string);
+  empty_multibyte_string = chez_make_string ("", 0);
+  Slock_object (empty_multibyte_string);
+}
+#else
 init_alloc_once (void)
 {
   gc_cons_threshold = GC_DEFAULT_THRESHOLD;
@@ -7367,6 +7621,7 @@ init_alloc_once (void)
   init_strings ();
   init_vectors ();
 }
+#endif
 
 static void
 init_alloc_once_for_pdumper (void)

@@ -68,7 +68,7 @@ sub_char_table_ref_and_range (Lisp_Object, int, int *, int *,
 
 /* 1 iff TABLE is a uniprop table.  */
 #define UNIPROP_TABLE_P(TABLE)					\
-  (EQ (XCHAR_TABLE (TABLE)->purpose, Qchar_code_property_table)	\
+  (EQ (CT_PURPOSE (TABLE), Qchar_code_property_table)		\
    && CHAR_TABLE_EXTRA_SLOTS (XCHAR_TABLE (TABLE)) == 5)
 
 /* Return a decoder for values in the uniprop table TABLE.  */
@@ -92,12 +92,22 @@ CHECK_CHAR_TABLE (Lisp_Object x)
 static void
 set_char_table_ascii (Lisp_Object table, Lisp_Object val)
 {
+#ifdef HAVE_CHEZ
+  /* Use Svector_set for Chez's write barrier — struct overlay writes
+     bypass it, causing generational GC to miss old→young refs.  */
+  Svector_set (table, 4, val);  /* slot 4 = ascii */
+#else
   XCHAR_TABLE (table)->ascii = val;
+#endif
 }
 static void
 set_char_table_parent (Lisp_Object table, Lisp_Object val)
 {
+#ifdef HAVE_CHEZ
+  Svector_set (table, 2, val);  /* slot 2 = parent */
+#else
   XCHAR_TABLE (table)->parent = val;
+#endif
 }
 
 DEFUN ("make-char-table", Fmake_char_table, Smake_char_table, 1, 2, 0,
@@ -130,7 +140,12 @@ the char-table has no extra slot.  */)
   XSETPVECTYPE (XVECTOR (vector), PVEC_CHAR_TABLE);
   set_char_table_parent (vector, Qnil);
   set_char_table_purpose (vector, purpose);
+#ifndef HAVE_CHEZ
+  /* In non-Chez mode, this re-tags the pointer as a type assertion.
+     In Chez mode, vector is already a valid Lisp_Object (a Chez vector
+     with the correct tag in slot 0).  */
   XSETCHAR_TABLE (vector, XCHAR_TABLE (vector));
+#endif
   return vector;
 }
 
@@ -141,7 +156,7 @@ make_sub_char_table (int depth, int min_char, Lisp_Object defalt)
   Lisp_Object table = make_uninit_sub_char_table (depth, min_char);
 
   for (i = 0; i < chartab_size[depth]; i++)
-    XSUB_CHAR_TABLE (table)->contents[i] = defalt;
+    SCT_SET_CONTENTS (table, i, defalt);
   return table;
 }
 
@@ -150,13 +165,13 @@ char_table_ascii (Lisp_Object table)
 {
   Lisp_Object sub, val;
 
-  sub = XCHAR_TABLE (table)->contents[0];
+  sub = CT_CONTENTS (table, 0);
   if (! SUB_CHAR_TABLE_P (sub))
     return sub;
-  sub = XSUB_CHAR_TABLE (sub)->contents[0];
+  sub = SCT_CONTENTS (sub, 0);
   if (! SUB_CHAR_TABLE_P (sub))
     return sub;
-  val = XSUB_CHAR_TABLE (sub)->contents[0];
+  val = SCT_CONTENTS (sub, 0);
   if (UNIPROP_TABLE_P (table) && UNIPROP_COMPRESSED_FORM_P (val))
     val = uniprop_table_uncompress (sub, 0);
   return val;
@@ -165,15 +180,15 @@ char_table_ascii (Lisp_Object table)
 static Lisp_Object
 copy_sub_char_table (Lisp_Object table)
 {
-  int depth = XSUB_CHAR_TABLE (table)->depth;
-  int min_char = XSUB_CHAR_TABLE (table)->min_char;
+  int depth = SCT_DEPTH (table);
+  int min_char = SCT_MIN_CHAR (table);
   Lisp_Object copy = make_sub_char_table (depth, min_char, Qnil);
   int i;
 
   /* Recursively copy any sub char-tables.  */
   for (i = 0; i < chartab_size[depth]; i++)
     {
-      Lisp_Object val = XSUB_CHAR_TABLE (table)->contents[i];
+      Lisp_Object val = SCT_CONTENTS (table, i);
       set_sub_char_table_contents
 	(copy, i, SUB_CHAR_TABLE_P (val) ? copy_sub_char_table (val) : val);
     }
@@ -188,32 +203,35 @@ copy_char_table (Lisp_Object table)
   int size = PVSIZE (table);
   Lisp_Object copy = make_nil_vector (size);
   XSETPVECTYPE (XVECTOR (copy), PVEC_CHAR_TABLE);
-  set_char_table_defalt (copy, XCHAR_TABLE (table)->defalt);
-  set_char_table_parent (copy, XCHAR_TABLE (table)->parent);
-  set_char_table_purpose (copy, XCHAR_TABLE (table)->purpose);
+  set_char_table_defalt (copy, CT_DEFALT (table));
+  set_char_table_parent (copy, CT_PARENT (table));
+  set_char_table_purpose (copy, CT_PURPOSE (table));
   for (int i = 0; i < chartab_size[0]; i++)
     set_char_table_contents
       (copy, i,
-       (SUB_CHAR_TABLE_P (XCHAR_TABLE (table)->contents[i])
-	? copy_sub_char_table (XCHAR_TABLE (table)->contents[i])
-	: XCHAR_TABLE (table)->contents[i]));
+       (SUB_CHAR_TABLE_P (CT_CONTENTS (table, i))
+	? copy_sub_char_table (CT_CONTENTS (table, i))
+	: CT_CONTENTS (table, i)));
   set_char_table_ascii (copy, char_table_ascii (copy));
   size -= CHAR_TABLE_STANDARD_SLOTS;
   for (int i = 0; i < size; i++)
-    set_char_table_extras (copy, i, XCHAR_TABLE (table)->extras[i]);
+    set_char_table_extras (copy, i, CT_EXTRAS (table, i));
 
+#ifndef HAVE_CHEZ
   XSETCHAR_TABLE (copy, XCHAR_TABLE (copy));
+#endif
   return copy;
 }
 
 static Lisp_Object
 sub_char_table_ref (Lisp_Object table, int c, bool is_uniprop)
 {
-  struct Lisp_Sub_Char_Table *tbl = XSUB_CHAR_TABLE (table);
+  int depth = SCT_DEPTH (table);
+  int min_char = SCT_MIN_CHAR (table);
   Lisp_Object val;
-  int idx = CHARTAB_IDX (c, tbl->depth, tbl->min_char);
+  int idx = CHARTAB_IDX (c, depth, min_char);
 
-  val = tbl->contents[idx];
+  val = SCT_CONTENTS (table, idx);
   if (is_uniprop && UNIPROP_COMPRESSED_FORM_P (val))
     val = uniprop_table_uncompress (table, idx);
   if (SUB_CHAR_TABLE_P (val))
@@ -224,26 +242,25 @@ sub_char_table_ref (Lisp_Object table, int c, bool is_uniprop)
 Lisp_Object
 char_table_ref (Lisp_Object table, int c)
 {
-  struct Lisp_Char_Table *tbl = XCHAR_TABLE (table);
   Lisp_Object val;
 
   if (ASCII_CHAR_P (c))
     {
-      val = tbl->ascii;
+      val = CT_ASCII (table);
       if (SUB_CHAR_TABLE_P (val))
-	val = XSUB_CHAR_TABLE (val)->contents[c];
+	val = SCT_CONTENTS (val, c);
     }
   else
     {
-      val = tbl->contents[CHARTAB_IDX (c, 0, 0)];
+      val = CT_CONTENTS (table, CHARTAB_IDX (c, 0, 0));
       if (SUB_CHAR_TABLE_P (val))
 	val = sub_char_table_ref (val, c, UNIPROP_TABLE_P (table));
     }
   if (NILP (val))
     {
-      val = tbl->defalt;
-      if (NILP (val) && CHAR_TABLE_P (tbl->parent))
-	val = char_table_ref (tbl->parent, c);
+      val = CT_DEFALT (table);
+      if (NILP (val) && CHAR_TABLE_P (CT_PARENT (table)))
+	val = char_table_ref (CT_PARENT (table), c);
     }
   return val;
 }
@@ -253,8 +270,8 @@ char_table_ref_simple (Lisp_Object table, int idx, int c, int *from, int *to,
 		       Lisp_Object defalt, bool is_uniprop, bool is_subtable)
 {
   Lisp_Object val = is_subtable ?
-    XSUB_CHAR_TABLE (table)->contents[idx]:
-    XCHAR_TABLE (table)->contents[idx];
+    SCT_CONTENTS (table, idx):
+    CT_CONTENTS (table, idx);
   if (is_uniprop && UNIPROP_COMPRESSED_FORM_P (val))
     val = uniprop_table_uncompress (table, idx);
   if (SUB_CHAR_TABLE_P (val))
@@ -269,8 +286,7 @@ static Lisp_Object
 sub_char_table_ref_and_range (Lisp_Object table, int c, int *from, int *to,
 			      Lisp_Object defalt, bool is_uniprop)
 {
-  struct Lisp_Sub_Char_Table *tbl = XSUB_CHAR_TABLE (table);
-  int depth = tbl->depth, min_char = tbl->min_char;
+  int depth = SCT_DEPTH (table), min_char = SCT_MIN_CHAR (table);
   int chartab_idx = CHARTAB_IDX (c, depth, min_char), idx;
   Lisp_Object val
     = char_table_ref_simple (table, chartab_idx, c, from, to,
@@ -319,9 +335,9 @@ sub_char_table_ref_and_range (Lisp_Object table, int c, int *from, int *to,
 Lisp_Object
 char_table_ref_and_range (Lisp_Object table, int c, int *from, int *to)
 {
-  struct Lisp_Char_Table *tbl = XCHAR_TABLE (table);
   int chartab_idx = CHARTAB_IDX (c, 0, 0);
   bool is_uniprop = UNIPROP_TABLE_P (table);
+  Lisp_Object defalt = CT_DEFALT (table);
 
   if (*from < 0)
     *from = 0;
@@ -330,7 +346,7 @@ char_table_ref_and_range (Lisp_Object table, int c, int *from, int *to)
 
   Lisp_Object val
     = char_table_ref_simple (table, chartab_idx, c, from, to,
-			     tbl->defalt, is_uniprop, false);
+			     defalt, is_uniprop, false);
 
   int idx = chartab_idx;
   while (*from < idx * chartab_chars[0])
@@ -339,7 +355,7 @@ char_table_ref_and_range (Lisp_Object table, int c, int *from, int *to)
       idx--;
       Lisp_Object this_val
 	= char_table_ref_simple (table, idx, c, from, to,
-				 tbl->defalt, is_uniprop, false);
+				 defalt, is_uniprop, false);
 
       if (! EQ (this_val, val))
 	{
@@ -353,7 +369,7 @@ char_table_ref_and_range (Lisp_Object table, int c, int *from, int *to)
       c = chartab_idx * chartab_chars[0];
       Lisp_Object this_val
 	= char_table_ref_simple (table, chartab_idx, c, from, to,
-				 tbl->defalt, is_uniprop, false);
+				 defalt, is_uniprop, false);
 
       if (! EQ (this_val, val))
 	{
@@ -369,8 +385,7 @@ char_table_ref_and_range (Lisp_Object table, int c, int *from, int *to)
 static void
 sub_char_table_set (Lisp_Object table, int c, Lisp_Object val, bool is_uniprop)
 {
-  struct Lisp_Sub_Char_Table *tbl = XSUB_CHAR_TABLE (table);
-  int depth = tbl->depth, min_char = tbl->min_char;
+  int depth = SCT_DEPTH (table), min_char = SCT_MIN_CHAR (table);
   int i = CHARTAB_IDX (c, depth, min_char);
   Lisp_Object sub;
 
@@ -378,7 +393,7 @@ sub_char_table_set (Lisp_Object table, int c, Lisp_Object val, bool is_uniprop)
     set_sub_char_table_contents (table, i, val);
   else
     {
-      sub = tbl->contents[i];
+      sub = SCT_CONTENTS (table, i);
       if (! SUB_CHAR_TABLE_P (sub))
 	{
 	  if (is_uniprop && UNIPROP_COMPRESSED_FORM_P (sub))
@@ -398,17 +413,15 @@ sub_char_table_set (Lisp_Object table, int c, Lisp_Object val, bool is_uniprop)
 void
 char_table_set (Lisp_Object table, int c, Lisp_Object val)
 {
-  struct Lisp_Char_Table *tbl = XCHAR_TABLE (table);
-
   if (ASCII_CHAR_P (c)
-      && SUB_CHAR_TABLE_P (tbl->ascii))
-    set_sub_char_table_contents (tbl->ascii, c, val);
+      && SUB_CHAR_TABLE_P (CT_ASCII (table)))
+    set_sub_char_table_contents (CT_ASCII (table), c, val);
   else
     {
       int i = CHARTAB_IDX (c, 0, 0);
       Lisp_Object sub;
 
-      sub = tbl->contents[i];
+      sub = CT_CONTENTS (table, i);
       if (! SUB_CHAR_TABLE_P (sub))
 	{
 	  sub = make_sub_char_table (1, i * chartab_chars[0], sub);
@@ -424,8 +437,7 @@ static void
 sub_char_table_set_range (Lisp_Object table, int from, int to, Lisp_Object val,
 			  bool is_uniprop)
 {
-  struct Lisp_Sub_Char_Table *tbl = XSUB_CHAR_TABLE (table);
-  int depth = tbl->depth, min_char = tbl->min_char;
+  int depth = SCT_DEPTH (table), min_char = SCT_MIN_CHAR (table);
   int chars_in_block = chartab_chars[depth];
   int i, c, lim = chartab_size[depth];
 
@@ -441,7 +453,7 @@ sub_char_table_set_range (Lisp_Object table, int from, int to, Lisp_Object val,
 	set_sub_char_table_contents (table, i, val);
       else
 	{
-	  Lisp_Object sub = tbl->contents[i];
+	  Lisp_Object sub = SCT_CONTENTS (table, i);
 	  if (! SUB_CHAR_TABLE_P (sub))
 	    {
 	      if (is_uniprop && UNIPROP_COMPRESSED_FORM_P (sub))
@@ -461,8 +473,6 @@ sub_char_table_set_range (Lisp_Object table, int from, int to, Lisp_Object val,
 void
 char_table_set_range (Lisp_Object table, int from, int to, Lisp_Object val)
 {
-  struct Lisp_Char_Table *tbl = XCHAR_TABLE (table);
-
   if (from == to)
     char_table_set (table, from, val);
   else
@@ -480,7 +490,7 @@ char_table_set_range (Lisp_Object table, int from, int to, Lisp_Object val)
 	    set_char_table_contents (table, i, val);
 	  else
 	    {
-	      Lisp_Object sub = tbl->contents[i];
+	      Lisp_Object sub = CT_CONTENTS (table, i);
 	      if (! SUB_CHAR_TABLE_P (sub))
 		{
 		  sub = make_sub_char_table (1, i * chartab_chars[0], sub);
@@ -503,7 +513,7 @@ Return the subtype of char-table CHAR-TABLE.  The value is a symbol.  */)
 {
   CHECK_CHAR_TABLE (char_table);
 
-  return XCHAR_TABLE (char_table)->purpose;
+  return CT_PURPOSE (char_table);
 }
 
 DEFUN ("char-table-parent", Fchar_table_parent, Schar_table_parent,
@@ -517,7 +527,7 @@ then the actual applicable value is inherited from the parent char-table
 {
   CHECK_CHAR_TABLE (char_table);
 
-  return XCHAR_TABLE (char_table)->parent;
+  return CT_PARENT (char_table);
 }
 
 DEFUN ("set-char-table-parent", Fset_char_table_parent, Sset_char_table_parent,
@@ -534,7 +544,7 @@ Return PARENT.  PARENT must be either nil or another char-table.  */)
     {
       CHECK_CHAR_TABLE (parent);
 
-      for (temp = parent; !NILP (temp); temp = XCHAR_TABLE (temp)->parent)
+      for (temp = parent; !NILP (temp); temp = CT_PARENT (temp))
 	if (EQ (temp, char_table))
 	  error ("Attempt to make a chartable be its own parent");
     }
@@ -555,7 +565,7 @@ DEFUN ("char-table-extra-slot", Fchar_table_extra_slot, Schar_table_extra_slot,
       || XFIXNUM (n) >= CHAR_TABLE_EXTRA_SLOTS (XCHAR_TABLE (char_table)))
     args_out_of_range (char_table, n);
 
-  return XCHAR_TABLE (char_table)->extras[XFIXNUM (n)];
+  return CT_EXTRAS (char_table, XFIXNUM (n));
 }
 
 DEFUN ("set-char-table-extra-slot", Fset_char_table_extra_slot,
@@ -586,7 +596,7 @@ If RANGE is a cons (FROM . TO), the function returns the value for FROM.  */)
   CHECK_CHAR_TABLE (char_table);
 
   if (NILP (range))
-    val = XCHAR_TABLE (char_table)->defalt;
+    val = CT_DEFALT (char_table);
   else if (CHARACTERP (range))
     val = CHAR_TABLE_REF (char_table, XFIXNAT (range));
   else if (CONSP (range))
@@ -642,12 +652,11 @@ or a character code.  Return VALUE.  */)
 static Lisp_Object
 optimize_sub_char_table (Lisp_Object table, Lisp_Object test)
 {
-  struct Lisp_Sub_Char_Table *tbl = XSUB_CHAR_TABLE (table);
-  int i, depth = tbl->depth;
+  int i, depth = SCT_DEPTH (table);
   Lisp_Object elt, this;
   bool optimizable;
 
-  elt = XSUB_CHAR_TABLE (table)->contents[0];
+  elt = SCT_CONTENTS (table, 0);
   if (SUB_CHAR_TABLE_P (elt))
     {
       elt = optimize_sub_char_table (elt, test);
@@ -656,7 +665,7 @@ optimize_sub_char_table (Lisp_Object table, Lisp_Object test)
   optimizable = SUB_CHAR_TABLE_P (elt) ? 0 : 1;
   for (i = 1; i < chartab_size[depth]; i++)
     {
-      this = XSUB_CHAR_TABLE (table)->contents[i];
+      this = SCT_CONTENTS (table, i);
       if (SUB_CHAR_TABLE_P (this))
 	{
 	  this = optimize_sub_char_table (this, test);
@@ -686,7 +695,7 @@ equivalent and can be merged.  It defaults to `equal'.  */)
 
   for (i = 0; i < chartab_size[0]; i++)
     {
-      elt = XCHAR_TABLE (char_table)->contents[i];
+      elt = CT_CONTENTS (char_table, i);
       if (SUB_CHAR_TABLE_P (elt))
 	set_char_table_contents
 	  (char_table, i, optimize_sub_char_table (elt, test));
@@ -729,10 +738,8 @@ map_sub_char_table (void (*c_function) (Lisp_Object, Lisp_Object, Lisp_Object),
 
   if (SUB_CHAR_TABLE_P (table))
     {
-      struct Lisp_Sub_Char_Table *tbl = XSUB_CHAR_TABLE (table);
-
-      depth = tbl->depth;
-      min_char = tbl->min_char;
+      depth = SCT_DEPTH (table);
+      min_char = SCT_MIN_CHAR (table);
       max_char = min_char + chartab_chars[depth - 1] - 1;
     }
   else
@@ -754,8 +761,8 @@ map_sub_char_table (void (*c_function) (Lisp_Object, Lisp_Object, Lisp_Object),
        i++, c += chars_in_block)
     {
       Lisp_Object this = (SUB_CHAR_TABLE_P (table)
-			  ? XSUB_CHAR_TABLE (table)->contents[i]
-			  : XCHAR_TABLE (table)->contents[i]);
+			  ? SCT_CONTENTS (table, i)
+			  : CT_CONTENTS (table, i));
       int nextc = c + chars_in_block;
 
       if (is_uniprop && UNIPROP_COMPRESSED_FORM_P (this))
@@ -770,17 +777,17 @@ map_sub_char_table (void (*c_function) (Lisp_Object, Lisp_Object, Lisp_Object),
       else
 	{
 	  if (NILP (this))
-	    this = XCHAR_TABLE (top)->defalt;
+	    this = CT_DEFALT (top);
 	  if (!EQ (val, this))
 	    {
 	      bool different_value = 1;
 
 	      if (NILP (val))
 		{
-		  if (! NILP (XCHAR_TABLE (top)->parent))
+		  if (! NILP (CT_PARENT (top)))
 		    {
-		      Lisp_Object parent = XCHAR_TABLE (top)->parent;
-		      Lisp_Object temp = XCHAR_TABLE (parent)->parent;
+		      Lisp_Object parent = CT_PARENT (top);
+		      Lisp_Object temp = CT_PARENT (parent);
 
 		      /* This is to get a value of FROM in PARENT
 			 without checking the parent of PARENT.  */
@@ -845,23 +852,23 @@ map_char_table (void (*c_function) (Lisp_Object, Lisp_Object, Lisp_Object),
   uniprop_decoder_t decoder = UNIPROP_GET_DECODER (table);
 
   range = Fcons (make_fixnum (0), make_fixnum (MAX_CHAR));
-  parent = XCHAR_TABLE (table)->parent;
+  parent = CT_PARENT (table);
 
-  val = XCHAR_TABLE (table)->ascii;
+  val = CT_ASCII (table);
   if (SUB_CHAR_TABLE_P (val))
-    val = XSUB_CHAR_TABLE (val)->contents[0];
+    val = SCT_CONTENTS (val, 0);
   val = map_sub_char_table (c_function, function, table, arg, val, range,
 			    table);
 
   /* If VAL is nil and TABLE has a parent, we must consult the parent
      recursively.  */
-  while (NILP (val) && ! NILP (XCHAR_TABLE (table)->parent))
+  while (NILP (val) && ! NILP (CT_PARENT (table)))
     {
       Lisp_Object temp;
       int from = XFIXNUM (XCAR (range));
 
-      parent = XCHAR_TABLE (table)->parent;
-      temp = XCHAR_TABLE (parent)->parent;
+      parent = CT_PARENT (table);
+      temp = CT_PARENT (parent);
       /* This is to get a value of FROM in PARENT without checking the
 	 parent of PARENT.  */
       set_char_table_parent (parent, Qnil);
@@ -921,15 +928,15 @@ map_sub_char_table_for_charset (void (*c_function) (Lisp_Object, Lisp_Object),
 				Lisp_Object range, struct charset *charset,
 				unsigned from, unsigned to)
 {
-  struct Lisp_Sub_Char_Table *tbl = XSUB_CHAR_TABLE (table);
-  int i, c = tbl->min_char, depth = tbl->depth;
+  int depth = SCT_DEPTH (table), c = SCT_MIN_CHAR (table);
+  int i;
 
   if (depth < 3)
     for (i = 0; i < chartab_size[depth]; i++, c += chartab_chars[depth])
       {
 	Lisp_Object this;
 
-	this = tbl->contents[i];
+	this = SCT_CONTENTS (table, i);
 	if (SUB_CHAR_TABLE_P (this))
 	  map_sub_char_table_for_charset (c_function, function, this, arg,
 					  range, charset, from, to);
@@ -952,7 +959,7 @@ map_sub_char_table_for_charset (void (*c_function) (Lisp_Object, Lisp_Object),
 	Lisp_Object this;
 	unsigned code;
 
-	this = tbl->contents[i];
+	this = SCT_CONTENTS (table, i);
 	if (NILP (this)
 	    || (charset
 		&& (code = ENCODE_CHAR (charset, c),
@@ -1013,7 +1020,7 @@ map_char_table_for_charset (void (*c_function) (Lisp_Object, Lisp_Object),
     {
       Lisp_Object this;
 
-      this = XCHAR_TABLE (table)->contents[i];
+      this = CT_CONTENTS (table, i);
       if (SUB_CHAR_TABLE_P (this))
 	map_sub_char_table_for_charset (c_function, function, this, arg,
 					range, charset, from, to);
@@ -1089,8 +1096,8 @@ map_char_table_for_charset (void (*c_function) (Lisp_Object, Lisp_Object),
 static Lisp_Object
 uniprop_table_uncompress (Lisp_Object table, int idx)
 {
-  Lisp_Object val = XSUB_CHAR_TABLE (table)->contents[idx];
-  int min_char = XSUB_CHAR_TABLE (table)->min_char + chartab_chars[2] * idx;
+  Lisp_Object val = SCT_CONTENTS (table, idx);
+  int min_char = SCT_MIN_CHAR (table) + chartab_chars[2] * idx;
   Lisp_Object sub = make_sub_char_table (3, min_char, Qnil);
   const unsigned char *p, *pend;
 
@@ -1150,9 +1157,9 @@ uniprop_table_uncompress (Lisp_Object table, int idx)
 static Lisp_Object
 uniprop_decode_value_run_length (Lisp_Object table, Lisp_Object value)
 {
-  if (VECTORP (XCHAR_TABLE (table)->extras[4]))
+  if (VECTORP (CT_EXTRAS (table, 4)))
     {
-      Lisp_Object valvec = XCHAR_TABLE (table)->extras[4];
+      Lisp_Object valvec = CT_EXTRAS (table, 4);
 
       if (XFIXNUM (value) >= 0 && XFIXNUM (value) < ASIZE (valvec))
 	value = AREF (valvec, XFIXNUM (value));
@@ -1172,9 +1179,9 @@ uniprop_get_decoder (Lisp_Object table)
 {
   EMACS_INT i;
 
-  if (! FIXNUMP (XCHAR_TABLE (table)->extras[1]))
+  if (! FIXNUMP (CT_EXTRAS (table, 1)))
     return NULL;
-  i = XFIXNUM (XCHAR_TABLE (table)->extras[1]);
+  i = XFIXNUM (CT_EXTRAS (table, 1));
   if (i < 0 || i >= uniprop_decoder_count)
     return NULL;
   return uniprop_decoder[i];
@@ -1199,8 +1206,8 @@ uniprop_encode_value_character (Lisp_Object table, Lisp_Object value)
 static Lisp_Object
 uniprop_encode_value_run_length (Lisp_Object table, Lisp_Object value)
 {
-  Lisp_Object *value_table = XVECTOR (XCHAR_TABLE (table)->extras[4])->contents;
-  int i, size = ASIZE (XCHAR_TABLE (table)->extras[4]);
+  Lisp_Object *value_table = XVECTOR (CT_EXTRAS (table, 4))->contents;
+  int i, size = ASIZE (CT_EXTRAS (table, 4));
 
   for (i = 0; i < size; i++)
     if (EQ (value, value_table[i]))
@@ -1217,8 +1224,8 @@ uniprop_encode_value_run_length (Lisp_Object table, Lisp_Object value)
 static Lisp_Object
 uniprop_encode_value_numeric (Lisp_Object table, Lisp_Object value)
 {
-  Lisp_Object *value_table = XVECTOR (XCHAR_TABLE (table)->extras[4])->contents;
-  int i, size = ASIZE (XCHAR_TABLE (table)->extras[4]);
+  Lisp_Object *value_table = XVECTOR (CT_EXTRAS (table, 4))->contents;
+  int i, size = ASIZE (CT_EXTRAS (table, 4));
 
   CHECK_FIXNUM (value);
   for (i = 0; i < size; i++)
@@ -1228,7 +1235,7 @@ uniprop_encode_value_numeric (Lisp_Object table, Lisp_Object value)
   if (i == size)
     set_char_table_extras (table, 4,
 			   CALLN (Fvconcat,
-				  XCHAR_TABLE (table)->extras[4],
+				  CT_EXTRAS (table, 4),
 				  make_vector (1, value)));
   return make_fixnum (i);
 }
@@ -1247,9 +1254,9 @@ uniprop_get_encoder (Lisp_Object table)
 {
   EMACS_INT i;
 
-  if (! FIXNUMP (XCHAR_TABLE (table)->extras[2]))
+  if (! FIXNUMP (CT_EXTRAS (table, 2)))
     return NULL;
-  i = XFIXNUM (XCHAR_TABLE (table)->extras[2]);
+  i = XFIXNUM (CT_EXTRAS (table, 2));
   if (i < 0 || i >= uniprop_encoder_count)
     return NULL;
   return uniprop_encoder[i];
@@ -1279,7 +1286,7 @@ uniprop_table (Lisp_Object prop)
   if (! CHAR_TABLE_P (table)
       || ! UNIPROP_TABLE_P (table))
     return Qnil;
-  val = XCHAR_TABLE (table)->extras[1];
+  val = CT_EXTRAS (table, 1);
   if (FIXNUMP (val)
       ? (XFIXNUM (val) < 0 || XFIXNUM (val) >= uniprop_decoder_count)
       : ! NILP (val))

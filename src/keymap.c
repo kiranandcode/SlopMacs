@@ -118,11 +118,12 @@ The optional arg STRING supplies a menu name for the keymap
 in case you use it as a menu with `x-popup-menu'.  */)
   (Lisp_Object string)
 {
+  Lisp_Object result;
   if (!NILP (string))
-    {
-      return list2 (Qkeymap, string);
-    }
-  return list1 (Qkeymap);
+    result = list2 (Qkeymap, string);
+  else
+    result = list1 (Qkeymap);
+  return result;
 }
 
 void
@@ -3323,12 +3324,12 @@ describe_vector (Lisp_Object vector, Lisp_Object prefix, Lisp_Object args,
 	}
     }
 
-  if (CHAR_TABLE_P (vector) && ! NILP (XCHAR_TABLE (vector)->defalt))
+  if (CHAR_TABLE_P (vector) && ! NILP (CT_DEFALT (vector)))
     {
       if (!NILP (elt_prefix))
 	insert1 (elt_prefix);
       insert ("default", 7);
-      (*elt_describer) (XCHAR_TABLE (vector)->defalt, args);
+      (*elt_describer) (CT_DEFALT (vector), args);
     }
 }
 

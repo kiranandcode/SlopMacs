@@ -209,6 +209,81 @@ rather than compare the return value of this function against
 a fixed set of types.  */)
   (Lisp_Object object)
 {
+#ifdef HAVE_CHEZ
+  if (FIXNUMP (object))
+    return Qfixnum;
+  if (SYMBOLP (object))
+    return NILP (object) ? Qnull
+           : EQ (object, Qt) ? Qboolean
+           : Qsymbol;
+  if (STRINGP (object))
+    return Qstring;
+  if (CONSP (object))
+    return Qcons;
+  if (FLOATP (object))
+    return Qfloat;
+  if (BIGNUMP (object))
+    return Qbignum;
+  /* Pseudovector type dispatch for Chez mode.  */
+  if (Svectorp (object) && Svector_length (object) > 0
+      && Sfixnump (Svector_ref (object, 0)))
+    {
+      iptr tag = Sfixnum_value (Svector_ref (object, 0));
+      if (tag == CHEZ_VECTORLIKE_TAG)
+	return Qvector;
+      if (tag >= CHEZ_PVEC_BASE)
+	{
+	  int ptype = tag - CHEZ_PVEC_BASE;
+	  switch ((enum pvec_type) ptype)
+	    {
+	    case PVEC_NORMAL_VECTOR: return Qvector;
+	    case PVEC_BIGNUM: return Qbignum;
+	    case PVEC_MARKER: return Qmarker;
+	    case PVEC_SYMBOL_WITH_POS: return Qsymbol_with_pos;
+	    case PVEC_OVERLAY: return Qoverlay;
+	    case PVEC_FINALIZER: return Qfinalizer;
+	    case PVEC_USER_PTR: return Quser_ptr;
+	    case PVEC_WINDOW_CONFIGURATION: return Qwindow_configuration;
+	    case PVEC_PROCESS: return Qprocess;
+	    case PVEC_WINDOW: return Qwindow;
+	    case PVEC_SUBR:
+	      {
+		struct Lisp_Subr *subr = XSUBR (object);
+		return subr->max_args == UNEVALLED ? Qspecial_form
+		       : Qprimitive_function;
+	      }
+	    case PVEC_CLOSURE:
+	      /* Slot CLOSURE_CODE+1 (Chez offset) holds code.  */
+	      return CONSP (Svector_ref (object, CLOSURE_CODE + 1))
+		     ? Qinterpreted_function : Qbyte_code_function;
+	    case PVEC_BUFFER: return Qbuffer;
+	    case PVEC_CHAR_TABLE: return Qchar_table;
+	    case PVEC_BOOL_VECTOR: return Qbool_vector;
+	    case PVEC_FRAME: return Qframe;
+	    case PVEC_HASH_TABLE: return Qhash_table;
+	    case PVEC_OBARRAY: return Qobarray;
+	    case PVEC_THREAD: return Qthread;
+	    case PVEC_MUTEX: return Qmutex;
+	    case PVEC_CONDVAR: return Qcondition_variable;
+	    case PVEC_TERMINAL: return Qterminal;
+	    case PVEC_RECORD:
+	      {
+		/* Record slot 1 (AREF index 0) is the type descriptor.  */
+		Lisp_Object t = Svector_ref (object, 1);
+		if (PSEUDOVECTORP (t, PVEC_RECORD)
+		    && Svector_length (t) > 2)
+		  /* Return type name from AREF(t, 1) = slot 2.  */
+		  return Svector_ref (t, 2);
+		else
+		  return t;
+	      }
+	    case PVEC_SUB_CHAR_TABLE: return Qsub_char_table;
+	    default: return Qvector;
+	    }
+	}
+    }
+  return Qvector;
+#else
   switch (XTYPE (object))
     {
     case Lisp_Int0:
@@ -306,6 +381,7 @@ a fixed set of types.  */)
     default:
       emacs_abort ();
     }
+#endif /* !HAVE_CHEZ */
 }
 
 DEFUN ("consp", Fconsp, Sconsp, 1, 1, 0,
@@ -719,8 +795,34 @@ global value outside of any lexical scope.  */)
   (register Lisp_Object symbol)
 {
   Lisp_Object valcontents;
-  struct Lisp_Symbol *sym;
   CHECK_SYMBOL (symbol);
+
+#ifdef HAVE_CHEZ
+  {
+    Lisp_Object resolved = chez_resolve_symbol (symbol);
+   start:
+    switch (SYMBOL_REDIRECT (symbol))
+      {
+      case SYMBOL_PLAINVAL:
+	valcontents = Svector_ref (resolved, CHEZ_SYM_SLOT_VAL);
+	/* Map Chez Svoid to Qunbound so the check below works.  */
+	if (valcontents == Svoid)
+	  valcontents = Qunbound;
+	break;
+      case SYMBOL_VARALIAS:
+	symbol = Svector_ref (resolved, CHEZ_SYM_SLOT_VAL);
+	resolved = chez_resolve_symbol (symbol);
+	goto start;
+      case SYMBOL_FORWARDED:
+	return Qt;
+      case SYMBOL_LOCALIZED:
+	/* TODO */
+	return Qt;
+      default: emacs_abort ();
+      }
+  }
+#else
+  struct Lisp_Symbol *sym;
   sym = XSYMBOL (symbol);
 
  start:
@@ -748,6 +850,7 @@ global value outside of any lexical scope.  */)
       return Qt;
     default: emacs_abort ();
     }
+#endif
 
   return (BASE_EQ (valcontents, Qunbound) ? Qnil : Qt);
 }
@@ -761,7 +864,11 @@ DEFUN ("fboundp", Ffboundp, Sfboundp, 1, 1, 0,
   (Lisp_Object symbol)
 {
   CHECK_SYMBOL (symbol);
+#ifdef HAVE_CHEZ
+  return NILP (SYMBOL_FUNCTION (symbol)) ? Qnil : Qt;
+#else
   return NILP (XSYMBOL (symbol)->u.s.function) ? Qnil : Qt;
+#endif
 }
 
 DEFUN ("makunbound", Fmakunbound, Smakunbound, 1, 1, 0,
@@ -779,6 +886,15 @@ See also `fmakunbound'.  */)
   CHECK_SYMBOL (symbol);
   if (SYMBOL_CONSTANT_P (symbol))
     xsignal1 (Qsetting_constant, symbol);
+#ifdef HAVE_CHEZ
+  if (SYMBOL_REDIRECT (symbol) == SYMBOL_VARALIAS)
+    {
+      chez_set_symbol_redirect (symbol, SYMBOL_PLAINVAL);
+      SET_SYMBOL_VAL (symbol, Qunbound);
+    }
+  else
+    Fset (symbol, Qunbound);
+#else
   if (XSYMBOL (symbol)->u.s.redirect == SYMBOL_VARALIAS)
     {
       XSYMBOL (symbol)->u.s.redirect = SYMBOL_PLAINVAL;
@@ -786,6 +902,7 @@ See also `fmakunbound'.  */)
     }
   else
     Fset (symbol, Qunbound);
+#endif
   return symbol;
 }
 
@@ -812,7 +929,11 @@ DEFUN ("symbol-function", Fsymbol_function, Ssymbol_function, 1, 1, 0,
   (Lisp_Object symbol)
 {
   CHECK_SYMBOL (symbol);
+#ifdef HAVE_CHEZ
+  return SYMBOL_FUNCTION (symbol);
+#else
   return XSYMBOL (symbol)->u.s.function;
+#endif
 }
 
 DEFUN ("symbol-plist", Fsymbol_plist, Ssymbol_plist, 1, 1, 0,
@@ -820,7 +941,11 @@ DEFUN ("symbol-plist", Fsymbol_plist, Ssymbol_plist, 1, 1, 0,
   (Lisp_Object symbol)
 {
   CHECK_SYMBOL (symbol);
+#ifdef HAVE_CHEZ
+  return SYMBOL_PLIST (symbol);
+#else
   return XSYMBOL (symbol)->u.s.plist;
+#endif
 }
 
 DEFUN ("symbol-name", Fsymbol_name, Ssymbol_name, 1, 1, 0,
@@ -911,7 +1036,11 @@ signal a `cyclic-function-indirection' error.  */)
 
   /* Ensure non-circularity.  */
   for (Lisp_Object s = definition; SYMBOLP (s) && !NILP (s);
+#ifdef HAVE_CHEZ
+       s = SYMBOL_FUNCTION (s))
+#else
        s = XSYMBOL (s)->u.s.function)
+#endif
     if (EQ (s, symbol))
       xsignal1 (Qcyclic_function_indirection, symbol);
 
@@ -981,7 +1110,11 @@ defalias (Lisp_Object symbol, Lisp_Object definition)
   }
 
   {
+#ifdef HAVE_CHEZ
+    Lisp_Object olddef = SYMBOL_FUNCTION (symbol);
+#else
     Lisp_Object olddef = XSYMBOL (symbol)->u.s.function;
+#endif
     if (!NILP (olddef))
       {
         if (!NILP (Vautoload_queue))
@@ -1299,10 +1432,15 @@ If OBJECT is not a symbol, just return it.  */)
 {
   if (SYMBOLP (object))
     {
+#ifdef HAVE_CHEZ
+      while (SYMBOL_REDIRECT (object) == SYMBOL_VARALIAS)
+	object = Svector_ref (object, CHEZ_SYM_SLOT_VAL);
+#else
       struct Lisp_Symbol *sym = XSYMBOL (object);
       while (sym->u.s.redirect == SYMBOL_VARALIAS)
 	sym = SYMBOL_ALIAS (sym);
       XSETSYMBOL (object, sym);
+#endif
     }
   return object;
 }
@@ -1487,6 +1625,24 @@ store_symval_forwarding (lispfwd valcontents, Lisp_Object newval,
       break;
 
     case Lisp_Fwd_Obj:
+#ifdef HAVE_CHEZ
+      /* Diagnostic: catch when Vstandard_output gets set to wrong t.  */
+      if (XOBJVAR (valcontents) == &globals.f_Vstandard_output
+	  && !EQ (newval, Qt) && !NILP (newval))
+	{
+	  fprintf (stderr, "[STDOUTSET] Vstandard_output being set to %p "
+		   "(Qt=%p) SYMBOLP=%d",
+		   (void *) newval, (void *) Qt, SYMBOLP (newval));
+	  if (SYMBOLP (newval))
+	    {
+	      Lisp_Object nm = SYMBOL_NAME (newval);
+	      fprintf (stderr, " name=\"%.*s\"",
+		       (int) SBYTES (nm), SDATA (nm));
+	    }
+	  fprintf (stderr, "\n");
+	  fflush (stderr);
+	}
+#endif
       *XOBJVAR (valcontents) = newval;
 
       /* If this variable is a default for something stored
@@ -1618,9 +1774,38 @@ swap_in_symval_forwarding (struct Lisp_Symbol *symbol, struct Lisp_Buffer_Local_
 Lisp_Object
 find_symbol_value (Lisp_Object symbol)
 {
-  struct Lisp_Symbol *sym;
-
   CHECK_SYMBOL (symbol);
+
+#ifdef HAVE_CHEZ
+  {
+    /* Resolve Snil/Strue to their backing symbol vectors.  */
+    Lisp_Object resolved = chez_resolve_symbol (symbol);
+   start:
+    switch (SYMBOL_REDIRECT (symbol))
+      {
+      case SYMBOL_VARALIAS:
+	symbol = Svector_ref (resolved, CHEZ_SYM_SLOT_VAL);
+	resolved = chez_resolve_symbol (symbol);
+	goto start;
+      case SYMBOL_PLAINVAL:
+	{
+	  Lisp_Object val = Svector_ref (resolved, CHEZ_SYM_SLOT_VAL);
+	  return (val == Svoid) ? Qunbound : val;
+	}
+      case SYMBOL_FORWARDED:
+	{
+	  lispfwd fwd = (lispfwd) (uintptr_t)
+	    Sfixnum_value (Svector_ref (resolved, CHEZ_SYM_SLOT_VAL));
+	  return do_symval_forwarding (fwd);
+	}
+      case SYMBOL_LOCALIZED:
+	/* TODO: implement buffer-local variables in Chez mode.  */
+	error ("CHEZ: find_symbol_value SYMBOL_LOCALIZED not yet implemented");
+      default: emacs_abort ();
+      }
+  }
+#else
+  struct Lisp_Symbol *sym;
   sym = XSYMBOL (symbol);
 
  start:
@@ -1640,6 +1825,7 @@ find_symbol_value (Lisp_Object symbol)
       return do_symval_forwarding (SYMBOL_FWD (sym));
     default: emacs_abort ();
     }
+#endif
 }
 
 DEFUN ("symbol-value", Fsymbol_value, Ssymbol_value, 1, 1, 0,
@@ -1683,6 +1869,79 @@ set_internal (Lisp_Object symbol, Lisp_Object newval, Lisp_Object where,
   /* If restoring in a dead buffer, do nothing.  */
 
   CHECK_SYMBOL (symbol);
+
+#ifdef HAVE_CHEZ
+  switch (SYMBOL_TRAPPED_WRITE_P (symbol))
+    {
+    case SYMBOL_NOWRITE:
+      if (NILP (Fkeywordp (symbol))
+          || !EQ (newval, Fsymbol_value (symbol)))
+        xsignal1 (Qsetting_constant, symbol);
+      else
+        return;
+
+    case SYMBOL_TRAPPED_WRITE:
+      if (bindflag != SET_INTERNAL_THREAD_SWITCH)
+        notify_variable_watchers (symbol, (unbinding_p ? Qnil : newval),
+                                  (bindflag == SET_INTERNAL_BIND
+				   ? Qlet
+				   : (bindflag == SET_INTERNAL_UNBIND
+				      ? Qunlet
+				      : (unbinding_p
+					 ? Qmakunbound : Qset))),
+                                  where);
+      break;
+
+    case SYMBOL_UNTRAPPED_WRITE:
+      break;
+
+    default: emacs_abort ();
+    }
+
+  {
+    Lisp_Object resolved = chez_resolve_symbol (symbol);
+   start:
+    switch (SYMBOL_REDIRECT (symbol))
+      {
+      case SYMBOL_VARALIAS:
+	symbol = Svector_ref (resolved, CHEZ_SYM_SLOT_VAL);
+	resolved = chez_resolve_symbol (symbol);
+	goto start;
+      case SYMBOL_PLAINVAL:
+	Svector_set (resolved, CHEZ_SYM_SLOT_VAL, newval);
+	return;
+      case SYMBOL_FORWARDED:
+	{
+	  struct buffer *buf
+	    = BUFFERP (where) ? XBUFFER (where) : current_buffer;
+	  lispfwd innercontents = (lispfwd) (uintptr_t)
+	    Sfixnum_value (Svector_ref (resolved, CHEZ_SYM_SLOT_VAL));
+
+	if (unbinding_p)
+	  error ("Built-in variable may not be unbound : %s",
+		 SDATA (SYMBOL_NAME (symbol)));
+
+	if (BUFFER_OBJFWDP (innercontents))
+	  {
+	    int offset = XBUFFER_OFFSET (innercontents);
+	    int idx = PER_BUFFER_IDX (offset);
+	    if (idx > 0 && bindflag == SET_INTERNAL_SET
+	        && !PER_BUFFER_VALUE_P (buf, idx))
+	      SET_PER_BUFFER_VALUE_P (buf, idx, 1);
+	  }
+
+	store_symval_forwarding (innercontents, newval, buf);
+	break;
+      }
+      case SYMBOL_LOCALIZED:
+	error ("CHEZ: set_internal SYMBOL_LOCALIZED not yet implemented");
+	break;
+      default: emacs_abort ();
+      }
+  }
+  return;
+
+#else /* !HAVE_CHEZ */
   struct Lisp_Symbol *sym = XSYMBOL (symbol);
   switch (sym->u.s.trapped_write)
     {
@@ -1828,15 +2087,22 @@ set_internal (Lisp_Object symbol, Lisp_Object newval, Lisp_Object where,
     default: emacs_abort ();
     }
   return;
+#endif /* !HAVE_CHEZ */
 }
 
 static void
 set_symbol_trapped_write (Lisp_Object symbol, enum symbol_trapped_write trap)
 {
+#ifdef HAVE_CHEZ
+  if (SYMBOL_TRAPPED_WRITE_P (symbol) == SYMBOL_NOWRITE)
+    xsignal1 (Qtrapping_constant, symbol);
+  chez_set_symbol_trapped_write (symbol, trap);
+#else
   struct Lisp_Symbol *sym = XSYMBOL (symbol);
   if (sym->u.s.trapped_write == SYMBOL_NOWRITE)
     xsignal1 (Qtrapping_constant, symbol);
   sym->u.s.trapped_write = trap;
+#endif
 }
 
 static void
@@ -1851,7 +2117,7 @@ harmonize_variable_watchers (Lisp_Object alias, Lisp_Object base_variable)
   if (!EQ (base_variable, alias)
       && EQ (base_variable, Findirect_variable (alias)))
     set_symbol_trapped_write
-      (alias, XSYMBOL (base_variable)->u.s.trapped_write);
+      (alias, SYMBOL_TRAPPED_WRITE_P (base_variable));
 }
 
 DEFUN ("add-variable-watcher", Fadd_variable_watcher, Sadd_variable_watcher,
@@ -1961,9 +2227,42 @@ notify_variable_watchers (Lisp_Object symbol,
 Lisp_Object
 default_value (Lisp_Object symbol)
 {
-  struct Lisp_Symbol *sym;
-
   CHECK_SYMBOL (symbol);
+
+#ifdef HAVE_CHEZ
+  {
+    Lisp_Object resolved = chez_resolve_symbol (symbol);
+   start:
+    switch (SYMBOL_REDIRECT (symbol))
+      {
+      case SYMBOL_VARALIAS:
+	symbol = Svector_ref (resolved, CHEZ_SYM_SLOT_VAL);
+	resolved = chez_resolve_symbol (symbol);
+	goto start;
+      case SYMBOL_PLAINVAL:
+	{
+	  Lisp_Object val = Svector_ref (resolved, CHEZ_SYM_SLOT_VAL);
+	  return (val == Svoid) ? Qunbound : val;
+	}
+      case SYMBOL_FORWARDED:
+	{
+	  lispfwd valcontents = (lispfwd) (uintptr_t)
+	    Sfixnum_value (Svector_ref (resolved, CHEZ_SYM_SLOT_VAL));
+	  if (BUFFER_OBJFWDP (valcontents))
+	    {
+	      int offset = XBUFFER_OFFSET (valcontents);
+	      if (PER_BUFFER_IDX (offset) != 0)
+		return per_buffer_default (offset);
+	    }
+	  return do_symval_forwarding (valcontents);
+	}
+      case SYMBOL_LOCALIZED:
+	error ("CHEZ: default_value SYMBOL_LOCALIZED not yet implemented");
+      default: emacs_abort ();
+      }
+  }
+#else
+  struct Lisp_Symbol *sym;
   sym = XSYMBOL (symbol);
 
  start:
@@ -1973,10 +2272,6 @@ default_value (Lisp_Object symbol)
     case SYMBOL_PLAINVAL: return SYMBOL_VAL (sym);
     case SYMBOL_LOCALIZED:
       {
-	/* If var is set up for a buffer that lacks a local value for it,
-	   the current value is nominally the default value.
-	   But the `realvalue' slot may be more up to date, since
-	   ordinary setq stores just that slot.  So use that.  */
 	struct Lisp_Buffer_Local_Value *blv = SYMBOL_BLV (sym);
 	if (blv->fwd && BASE_EQ (blv->valcell, blv->defcell))
 	  return do_symval_forwarding (blv->fwd);
@@ -1986,21 +2281,17 @@ default_value (Lisp_Object symbol)
     case SYMBOL_FORWARDED:
       {
 	lispfwd valcontents = SYMBOL_FWD (sym);
-
-	/* For a built-in buffer-local variable, get the default value
-	   rather than letting do_symval_forwarding get the current value.  */
 	if (BUFFER_OBJFWDP (valcontents))
 	  {
 	    int offset = XBUFFER_OFFSET (valcontents);
 	    if (PER_BUFFER_IDX (offset) != 0)
 	      return per_buffer_default (offset);
 	  }
-
-	/* For other variables, get the current value.  */
 	return do_symval_forwarding (valcontents);
       }
     default: emacs_abort ();
     }
+#endif
 }
 
 DEFUN ("default-boundp", Fdefault_boundp, Sdefault_boundp, 1, 1, 0,
@@ -2035,6 +2326,45 @@ set_default_internal (Lisp_Object symbol, Lisp_Object value,
                       enum Set_Internal_Bind bindflag, KBOARD *where)
 {
   CHECK_SYMBOL (symbol);
+
+#ifdef HAVE_CHEZ
+  switch (SYMBOL_TRAPPED_WRITE_P (symbol))
+    {
+    case SYMBOL_NOWRITE:
+      if (NILP (Fkeywordp (symbol))
+          || !EQ (value, Fsymbol_value (symbol)))
+        xsignal1 (Qsetting_constant, symbol);
+      else
+        return;
+    case SYMBOL_TRAPPED_WRITE:
+      if (SYMBOL_REDIRECT (symbol) != SYMBOL_PLAINVAL
+          && bindflag != SET_INTERNAL_THREAD_SWITCH)
+        notify_variable_watchers (symbol, value, Qset_default, Qnil);
+      break;
+    case SYMBOL_UNTRAPPED_WRITE:
+      break;
+    default: emacs_abort ();
+    }
+
+  Lisp_Object resolved = chez_resolve_symbol (symbol);
+ start:
+  switch (SYMBOL_REDIRECT (symbol))
+    {
+    case SYMBOL_VARALIAS:
+      symbol = Svector_ref (resolved, CHEZ_SYM_SLOT_VAL);
+      resolved = chez_resolve_symbol (symbol);
+      goto start;
+    case SYMBOL_PLAINVAL:
+      set_internal (symbol, value, Qnil, bindflag);
+      return;
+    case SYMBOL_LOCALIZED:
+      error ("CHEZ: set_default_internal SYMBOL_LOCALIZED not yet implemented");
+      return;
+    case SYMBOL_FORWARDED:
+      {
+	lispfwd valcontents = (lispfwd) (uintptr_t)
+	  Sfixnum_value (Svector_ref (resolved, CHEZ_SYM_SLOT_VAL));
+#else /* !HAVE_CHEZ */
   struct Lisp_Symbol *sym = XSYMBOL (symbol);
   switch (sym->u.s.trapped_write)
     {
@@ -2080,6 +2410,7 @@ set_default_internal (Lisp_Object symbol, Lisp_Object value,
     case SYMBOL_FORWARDED:
       {
 	lispfwd valcontents = SYMBOL_FWD (sym);
+#endif /* !HAVE_CHEZ */
 
 	/* Handle variables like case-fold-search that have special slots
 	   in the buffer.
@@ -2203,6 +2534,11 @@ See also `defvar-local'.  */)
   bool forwarded UNINIT;
 
   CHECK_SYMBOL (variable);
+#ifdef HAVE_CHEZ
+  /* TODO: Implement buffer-local variables in Chez mode.
+     For now, silently return the variable to allow init to proceed.  */
+  return variable;
+#endif
   sym = XSYMBOL (variable);
 
  start:
@@ -2271,6 +2607,10 @@ Instead, use `add-hook' and specify t for the LOCAL argument.  */)
   struct Lisp_Buffer_Local_Value *blv = NULL;
 
   CHECK_SYMBOL (variable);
+#ifdef HAVE_CHEZ
+  /* TODO: Implement buffer-local variables in Chez mode.  */
+  return variable;
+#endif
   sym = XSYMBOL (variable);
 
  start:
@@ -2358,6 +2698,10 @@ From now on the default value will apply in this buffer.  Return VARIABLE.  */)
   struct Lisp_Symbol *sym;
 
   CHECK_SYMBOL (variable);
+#ifdef HAVE_CHEZ
+  /* TODO: Implement buffer-local variables in Chez mode.  */
+  return variable;
+#endif
   sym = XSYMBOL (variable);
 
  start:
@@ -2425,6 +2769,10 @@ Also see `buffer-local-boundp'.*/)
   struct Lisp_Symbol *sym;
 
   CHECK_SYMBOL (variable);
+#ifdef HAVE_CHEZ
+  (void) buf;
+  return Qnil;
+#endif
   sym = XSYMBOL (variable);
 
  start:
@@ -2475,6 +2823,9 @@ value in BUFFER, or if VARIABLE is automatically buffer-local (see
   struct Lisp_Symbol *sym;
 
   CHECK_SYMBOL (variable);
+#ifdef HAVE_CHEZ
+  return Qnil;
+#endif
   sym = XSYMBOL (variable);
 
  start:
@@ -2507,6 +2858,10 @@ If the current binding is global (the default), the value is nil.  */)
   struct Lisp_Symbol *sym;
 
   CHECK_SYMBOL (variable);
+#ifdef HAVE_CHEZ
+  find_symbol_value (variable);
+  return Qnil;
+#endif
   sym = XSYMBOL (variable);
 
   /* Make sure the current binding is actually swapped in.  */
@@ -2550,7 +2905,11 @@ Lisp_Object
 indirect_function (Lisp_Object object)
 {
   while (SYMBOLP (object) && !NILP (object))
+#ifdef HAVE_CHEZ
+    object = SYMBOL_FUNCTION (object);
+#else
     object = XSYMBOL (object)->u.s.function;
+#endif
   return object;
 }
 
@@ -4067,6 +4426,7 @@ syms_of_data (void)
   DEFSYM (Qsymbol_with_pos_p, "symbol-with-pos-p");
   DEFSYM (Qsymbolp, "symbolp");
   DEFSYM (Qfixnump, "fixnump");
+  DEFSYM (Qfixnum, "fixnum");
   DEFSYM (Qintegerp, "integerp");
   DEFSYM (Qbooleanp, "booleanp");
   DEFSYM (Qnatnump, "natnump");

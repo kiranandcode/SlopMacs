@@ -801,10 +801,10 @@ the same empty object instead of its copy.  */)
     }
 
   if (VECTORP (arg))
-    return Fvector (ASIZE (arg), XVECTOR (arg)->contents);
+    return Fvector (ASIZE (arg), XVECTOR_CONTENTS (arg));
 
   if (RECORDP (arg))
-    return Frecord (PVSIZE (arg), XVECTOR (arg)->contents);
+    return Frecord (PVSIZE (arg), XVECTOR_CONTENTS (arg));
 
   if (CHAR_TABLE_P (arg))
     return copy_char_table (arg);
@@ -1127,7 +1127,7 @@ concat_to_vector (ptrdiff_t nargs, Lisp_Object *args)
 
   /* Create the output vector.  */
   Lisp_Object result = make_uninit_vector (result_len);
-  Lisp_Object *dst = XVECTOR (result)->contents;
+  Lisp_Object *dst = XVECTOR_CONTENTS (result);
 
   /* Copy the contents of the args into the result.  */
 
@@ -1137,7 +1137,7 @@ concat_to_vector (ptrdiff_t nargs, Lisp_Object *args)
       if (VECTORP (arg))
 	{
 	  ptrdiff_t size = ASIZE (arg);
-	  memcpy (dst, XVECTOR (arg)->contents, size * sizeof *dst);
+	  memcpy (dst, XVECTOR_CONTENTS (arg), size * sizeof *dst);
 	  dst += size;
 	}
       else if (CONSP (arg))
@@ -1175,11 +1175,11 @@ concat_to_vector (ptrdiff_t nargs, Lisp_Object *args)
 	{
 	  eassert (CLOSUREP (arg));
 	  ptrdiff_t size = PVSIZE (arg);
-	  memcpy (dst, XVECTOR (arg)->contents, size * sizeof *dst);
+	  memcpy (dst, XVECTOR_CONTENTS (arg), size * sizeof *dst);
 	  dst += size;
 	}
     }
-  eassert (dst == XVECTOR (result)->contents + result_len);
+  eassert (dst == XVECTOR_CONTENTS (result) + result_len);
 
   return result;
 }
@@ -2435,7 +2435,7 @@ sort_vector (Lisp_Object vector, Lisp_Object predicate, Lisp_Object keyfunc,
 {
   ptrdiff_t length = ASIZE (vector);
   if (length >= 2)
-    tim_sort (predicate, keyfunc, XVECTOR (vector)->contents, length, reverse);
+    tim_sort (predicate, keyfunc, XVECTOR_CONTENTS (vector), length, reverse);
   return vector;
 }
 
@@ -2656,7 +2656,7 @@ This is the last value stored with `(put SYMBOL PROPNAME VALUE)'.  */)
 				   propname);
   if (!NILP (propval))
     return propval;
-  return plist_get (XSYMBOL (symbol)->u.s.plist, propname);
+  return plist_get (SYMBOL_PLIST (symbol), propname);
 }
 
 DEFUN ("plist-put", Fplist_put, Splist_put, 3, 4, 0,
@@ -2732,8 +2732,9 @@ It can later be retrieved with `(get SYMBOL PROPNAME)'.  */)
   (Lisp_Object symbol, Lisp_Object propname, Lisp_Object value)
 {
   CHECK_SYMBOL (symbol);
-  set_symbol_plist
-    (symbol, plist_put (XSYMBOL (symbol)->u.s.plist, propname, value));
+  Lisp_Object plist = SYMBOL_PLIST (symbol);
+  Lisp_Object new_plist = plist_put (plist, propname, value);
+  set_symbol_plist (symbol, new_plist);
   return value;
 }
 
@@ -3517,7 +3518,7 @@ FUNCTION must be a function of one argument, and must return a value
 	}
       else if (VECTORP (sequence))
 	{
-	  memcpy (args, XVECTOR (sequence)->contents, leni * sizeof *args);
+	  memcpy (args, XVECTOR_CONTENTS (sequence), leni * sizeof *args);
 	  goto concat;
 	}
     }
@@ -4673,11 +4674,20 @@ larger_vector (Lisp_Object vec, ptrdiff_t incr_min, ptrdiff_t nitems_max)
   if (incr_max < incr)
     memory_full (SIZE_MAX);
   new_size = old_size + incr;
+#ifdef HAVE_CHEZ
+  Lisp_Object newvec = make_uninit_vector (new_size);
+  for (ptrdiff_t i = 0; i < old_size; i++)
+    ASET (newvec, i, AREF (vec, i));
+  for (ptrdiff_t i = old_size; i < new_size; i++)
+    ASET (newvec, i, Qnil);
+  return newvec;
+#else
   v = allocate_vector (new_size);
-  memcpy (v->contents, XVECTOR (vec)->contents, old_size * sizeof *v->contents);
+  memcpy (v->contents, XVECTOR_CONTENTS (vec), old_size * sizeof *v->contents);
   memclear (v->contents + old_size, (new_size - old_size) * word_size);
   XSETVECTOR (vec, v);
   return vec;
+#endif
 }
 
 
@@ -4809,6 +4819,12 @@ hashfn_user_defined (Lisp_Object key, struct Lisp_Hash_Table *h)
 					 ? XUFIXNUM(hash) : sxhash (hash));
 }
 
+#ifdef HAVE_CHEZ
+/* In Chez mode, symbol values aren't compile-time constants.
+   Initialize at runtime in syms_of_fns.  */
+struct hash_table_test
+  hashtest_eq, hashtest_eql, hashtest_equal;
+#else
 struct hash_table_test const
   hashtest_eq = { .name = LISPSYM_INITIALLY (Qeq),
 		  .cmpfn = 0, .hashfn = hashfn_eq },
@@ -4816,6 +4832,7 @@ struct hash_table_test const
 		   .cmpfn = cmpfn_eql, .hashfn = hashfn_eql },
   hashtest_equal = { .name = LISPSYM_INITIALLY (Qequal),
 		     .cmpfn = cmpfn_equal, .hashfn = hashfn_equal };
+#endif
 
 /* Allocate basically initialized hash table.  */
 
@@ -4872,6 +4889,9 @@ make_hash_table (const struct hash_table_test *test, EMACS_INT size,
   if (size == 0)
     {
       h->key_and_value = NULL;
+#ifdef HAVE_CHEZ
+      h->kv_chez = Sfalse;
+#endif
       h->hash = NULL;
       h->next = NULL;
       h->index_bits = 0;
@@ -4880,10 +4900,19 @@ make_hash_table (const struct hash_table_test *test, EMACS_INT size,
     }
   else
     {
+#ifdef HAVE_CHEZ
+      /* Allocate key_and_value as a locked Chez vector so the GC can
+	 trace and update moved references.  The vector is pinned
+	 (Slock_object) so the C pointer into its data area is stable.  */
+      h->kv_chez = chez_Smake_vector (2 * size, HASH_UNUSED_ENTRY_KEY);
+      Slock_object (h->kv_chez);
+      h->key_and_value = &Svector_ref (h->kv_chez, 0);
+#else
       h->key_and_value = hash_table_alloc_bytes (2 * size
 						 * sizeof *h->key_and_value);
       for (ptrdiff_t i = 0; i < 2 * size; i++)
 	h->key_and_value[i] = HASH_UNUSED_ENTRY_KEY;
+#endif
 
       h->hash = hash_table_alloc_bytes (size * sizeof *h->hash);
 
@@ -4922,9 +4951,19 @@ copy_hash_table (struct Lisp_Hash_Table *h1)
 
   if (h1->table_size > 0)
     {
+#ifdef HAVE_CHEZ
+      /* Create a new locked Chez vector and copy entries with barrier.  */
+      ptrdiff_t kv_n = 2 * h1->table_size;
+      h2->kv_chez = chez_Smake_vector (kv_n, HASH_UNUSED_ENTRY_KEY);
+      Slock_object (h2->kv_chez);
+      for (ptrdiff_t i = 0; i < kv_n; i++)
+	Svector_set (h2->kv_chez, i, Svector_ref (h1->kv_chez, i));
+      h2->key_and_value = &Svector_ref (h2->kv_chez, 0);
+#else
       ptrdiff_t kv_bytes = 2 * h1->table_size * sizeof *h1->key_and_value;
       h2->key_and_value = hash_table_alloc_bytes (kv_bytes);
       memcpy (h2->key_and_value, h1->key_and_value, kv_bytes);
+#endif
 
       ptrdiff_t hash_bytes = h1->table_size * sizeof *h1->hash;
       h2->hash = hash_table_alloc_bytes (hash_bytes);
@@ -4972,12 +5011,22 @@ maybe_resize_hash_table (struct Lisp_Hash_Table *h)
 	next[i] = i + 1;
       next[new_size - 1] = -1;
 
+#ifdef HAVE_CHEZ
+      chez_ptr new_kv_chez
+	= chez_Smake_vector (2 * new_size, HASH_UNUSED_ENTRY_KEY);
+      Slock_object (new_kv_chez);
+      /* Copy old entries with write barrier.  */
+      for (ptrdiff_t i = 0; i < 2 * old_size; i++)
+	Svector_set (new_kv_chez, i, Svector_ref (h->kv_chez, i));
+      Lisp_Object *key_and_value = &Svector_ref (new_kv_chez, 0);
+#else
       Lisp_Object *key_and_value
 	= hash_table_alloc_bytes (2 * new_size * sizeof *key_and_value);
       memcpy (key_and_value, h->key_and_value,
 	      2 * old_size * sizeof *key_and_value);
       for (ptrdiff_t i = 2 * old_size; i < 2 * new_size; i++)
         key_and_value[i] = HASH_UNUSED_ENTRY_KEY;
+#endif
 
       hash_hash_t *hash = hash_table_alloc_bytes (new_size * sizeof *hash);
       memcpy (hash, h->hash, old_size * sizeof *hash);
@@ -4997,8 +5046,13 @@ maybe_resize_hash_table (struct Lisp_Hash_Table *h)
 	hash_table_free_bytes (h->index, old_index_size * sizeof *h->index);
       h->index = index;
 
+#ifdef HAVE_CHEZ
+      Sunlock_object (h->kv_chez);
+      h->kv_chez = new_kv_chez;
+#else
       hash_table_free_bytes (h->key_and_value,
 			     2 * old_size * sizeof *h->key_and_value);
+#endif
       h->key_and_value = key_and_value;
 
       hash_table_free_bytes (h->hash, old_size * sizeof *h->hash);
@@ -5007,7 +5061,9 @@ maybe_resize_hash_table (struct Lisp_Hash_Table *h)
       hash_table_free_bytes (h->next, old_size * sizeof *h->next);
       h->next = next;
 
+#ifndef HAVE_CHEZ
       h->key_and_value = key_and_value;
+#endif
 
       /* Rehash: all data occupy entries 0..old_size-1.  */
       for (ptrdiff_t i = 0; i < old_size; i++)
@@ -5048,6 +5104,9 @@ hash_table_thaw (Lisp_Object hash_table)
   if (size == 0)
     {
       h->key_and_value = NULL;
+#ifdef HAVE_CHEZ
+      h->kv_chez = Sfalse;
+#endif
       h->hash = NULL;
       h->next = NULL;
       h->index_bits = 0;
@@ -6737,6 +6796,20 @@ syms_of_fns (void)
   DEFSYM (Qeq, "eq");
   DEFSYM (Qeql, "eql");
   DEFSYM (Qequal, "equal");
+
+#ifdef HAVE_CHEZ
+  /* Initialize hash test structs at runtime since symbol values
+     aren't compile-time constants in Chez mode.  */
+  hashtest_eq = (struct hash_table_test) {
+    .name = Qeq, .cmpfn = 0, .hashfn = hashfn_eq
+  };
+  hashtest_eql = (struct hash_table_test) {
+    .name = Qeql, .cmpfn = cmpfn_eql, .hashfn = hashfn_eql
+  };
+  hashtest_equal = (struct hash_table_test) {
+    .name = Qequal, .cmpfn = cmpfn_equal, .hashfn = hashfn_equal
+  };
+#endif
   DEFSYM (QCtest, ":test");
   DEFSYM (QCsize, ":size");
   DEFSYM (QCpurecopy, ":purecopy");

@@ -38,6 +38,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include "androidterm.h"
 #endif
 
+#ifdef HAVE_CHEZ
+#include "chez.h"
+#endif
+
 #if defined HAVE_ANDROID && !defined ANDROID_STUBIFY
 #include "sfntfont.h"
 #endif
@@ -1383,6 +1387,17 @@ android_emacs_init (int argc, char **argv, char *dump_file)
       if (will_dump_p ())
         dump_mode = temacs;
 #endif
+#ifdef HAVE_CHEZ
+      /* Chez Scheme replaces pdumper — accept pbootstrap and bootstrap
+	 as temacs modes.  No dump is produced; loadup.el just loads
+	 the core Lisp files.  */
+      if (!dump_mode
+	  && (!strcmp (temacs, "pbootstrap") || !strcmp (temacs, "bootstrap")))
+	{
+	  gflags.will_bootstrap = true;
+	  dump_mode = temacs;
+	}
+#endif
       if (!dump_mode)
         fatal ("Invalid temacs mode '%s'", temacs);
     }
@@ -1950,6 +1965,15 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 
   init_signals ();
 
+#ifdef HAVE_CHEZ
+  /* Initialize Chez Scheme runtime before any Lisp_Object allocation.
+     This sets up the type system, GC, and threading infrastructure
+     that all subsequent allocations depend on.  */
+  init_chez ();
+  /* Set stack base for conservative GC stack scanning.  */
+  chez_set_stack_base (__builtin_frame_address (0));
+#endif
+
   noninteractive1 = noninteractive;
 
   /* Perform basic initializations (not merely interning symbols).  */
@@ -1957,16 +1981,20 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
   if (!initialized)
     {
       init_alloc_once ();
+#ifdef HAVE_PDUMPER
       init_pdumper_once ();
+#endif
       init_obarray_once ();
       init_eval_once ();
       init_charset_once ();
       init_coding_once ();
-      init_syntax_once ();	/* Create standard syntax table.  */
-      init_category_once ();	/* Create standard category table.  */
-      init_casetab_once ();	/* Must be done before init_buffer_once.  */
-      init_buffer_once ();	/* Create buffer table and some buffers.  */
-      init_minibuf_once ();	/* Create list of minibuffers.  */
+      init_syntax_once ();
+      init_category_once ();
+      init_casetab_once ();
+      init_buffer_once ();
+      init_minibuf_once ();
+      /* init_charset/coding/syntax/category/casetab/buffer/minibuf
+         now traced above.  */
 				/* Must precede init_window_once.  */
 
       /* Call syms_of_xfaces before init_window_once because that
@@ -1974,29 +2002,17 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 	 faces, and the face implementation uses some symbols as
 	 face names.  */
       syms_of_xfaces ();
-      /* XXX syms_of_keyboard uses some symbols in keymap.c.  It would
-         be better to arrange things not to have this dependency.  */
       syms_of_keymap ();
-      /* Call syms_of_keyboard before init_window_once because
-	 keyboard sets up symbols that include some face names that
-	 the X support will want to use.  This can happen when
-	 Emacs starts up from scratch (e.g., temacs).  */
       syms_of_keyboard ();
 
-      /* Called before syms_of_fileio, because it sets up Qerror_condition.  */
       syms_of_data ();
-      syms_of_fns ();  /* Before syms_of_charset which uses hash tables.  */
+      syms_of_fns ();
       syms_of_fileio ();
-      /* Before syms_of_coding to initialize Vgc_cons_threshold.  */
       syms_of_alloc ();
-      /* May call Ffuncall and so GC, thus the latter should be initialized.  */
       init_print_once ();
-      /* Before syms_of_coding because it initializes Qcharsetp.  */
       syms_of_charset ();
-      /* Before init_window_once, because it sets up the
-	 Vcoding_system_hash_table.  */
-      syms_of_coding ();	/* This should be after syms_of_fileio.  */
-      init_frame_once ();       /* Before init_window_once.  */
+      syms_of_coding ();
+      init_frame_once ();
       /* init_window_once calls make_initial_frame, which calls
 	 Fcurrent_time and bset_display_time, both of which allocate
 	 bignums.  Without the following call to init_bignums, crashes
@@ -2021,7 +2037,9 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
   init_xfaces ();
 
   if (!initialized)
+#ifdef HAVE_NATIVE_COMP
     syms_of_comp ();
+#endif
 
   /* Do less garbage collection in batch mode (since these tend to be
      more short-lived, and the memory is returned to the OS on exit
@@ -2462,6 +2480,9 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
       syms_of_webfont ();
       syms_of_fontset ();
 #endif /* HAVE_WEB */
+#ifdef HAVE_CHEZ
+      syms_of_chez ();
+#endif /* HAVE_CHEZ */
 
       syms_of_gnutls ();
 
@@ -2492,7 +2513,9 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
       syms_of_xwidget ();
       syms_of_threads ();
       syms_of_profiler ();
+#ifdef HAVE_PDUMPER
       syms_of_pdumper ();
+#endif
       syms_of_json ();
 
       keys_of_keyboard ();
@@ -2586,7 +2609,9 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 	}
       /* Unless next switch is -nl, load "loadup.el" first thing.  */
       if (! no_loadup)
-	Vtop_level = list2 (Qload, build_string ("loadup.el"));
+	{
+	  Vtop_level = list2 (Qload, build_string ("loadup.el"));
+	}
 
 #ifdef HAVE_NATIVE_COMP
       /* If we are going to load stuff in a non-initialized Emacs,

@@ -85,7 +85,7 @@ prepare_casing_context (struct casing_context *ctx,
        : uniprop_table (Qspecial_titlecase));
 
   /* If the case table is flagged as modified, rescan it.  */
-  if (NILP (XCHAR_TABLE (BVAR (current_buffer, downcase_table))->extras[1]))
+  if (NILP (CT_EXTRAS (BVAR (current_buffer, downcase_table), 1)))
     Fset_case_table (BVAR (current_buffer, downcase_table));
 
   if (inbuffer && flag >= CASE_CAPITALIZE)

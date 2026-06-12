@@ -865,6 +865,18 @@ If PRINTCHARFUN is omitted, the value of `standard-output' (which see)
 is used instead.  */)
   (Lisp_Object object, Lisp_Object printcharfun)
 {
+#ifdef HAVE_CHEZ
+  if (NILP (printcharfun) && !EQ (Vstandard_output, Qt)
+      && SYMBOLP (Vstandard_output))
+    {
+      fprintf (stderr, "[FPRINC-BAD] Vstdout=%p Qt=%p &Vstdout=%p\n",
+	       (void *) Vstandard_output, (void *) Qt,
+	       (void *) &globals.f_Vstandard_output);
+      fflush (stderr);
+      /* Force output to echo area (Qt) instead of crashing.  */
+      printcharfun = Qt;
+    }
+#endif
   if (NILP (printcharfun))
     printcharfun = Vstandard_output;
   struct print_context pc = print_prepare (printcharfun);
@@ -979,7 +991,6 @@ append to existing target file.  */)
 	report_file_error ("Cannot open debugging output stream", file);
     }
 
-  fflush (stderr);
   if (dup2 (fd, STDERR_FILENO) < 0)
     report_file_error ("dup2", file);
   if (fd != stderr_dup)
@@ -2620,8 +2631,8 @@ print_object (Lisp_Object obj, Lisp_Object printcharfun, bool escapeflag)
 	  {
 	    print_c_string ("#^^[", printcharfun);
 	    int n = sprintf (buf, "%d %d",
-			     XSUB_CHAR_TABLE (obj)->depth,
-			     XSUB_CHAR_TABLE (obj)->min_char);
+			     SCT_DEPTH (obj),
+			     SCT_MIN_CHAR (obj));
 	    strout (buf, n, n, printcharfun);
 	    print_stack_push_vector ("", "]", obj,
 				     SUB_CHAR_TABLE_OFFSET, PVSIZE (obj),

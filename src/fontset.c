@@ -188,7 +188,7 @@ fontset_id_valid_p (int id)
 
 /* Access special values of FONTSET.  */
 
-#define FONTSET_ID(fontset) XCHAR_TABLE (fontset)->extras[0]
+#define FONTSET_ID(fontset) CT_EXTRAS (fontset, 0)
 static void
 set_fontset_id (Lisp_Object fontset, Lisp_Object id)
 {
@@ -197,14 +197,14 @@ set_fontset_id (Lisp_Object fontset, Lisp_Object id)
 
 /* Access special values of (base) FONTSET.  */
 
-#define FONTSET_NAME(fontset) XCHAR_TABLE (fontset)->extras[1]
+#define FONTSET_NAME(fontset) CT_EXTRAS (fontset, 1)
 static void
 set_fontset_name (Lisp_Object fontset, Lisp_Object name)
 {
   set_char_table_extras (fontset, 1, name);
 }
 
-#define FONTSET_ASCII(fontset) XCHAR_TABLE (fontset)->extras[2]
+#define FONTSET_ASCII(fontset) CT_EXTRAS (fontset, 2)
 static void
 set_fontset_ascii (Lisp_Object fontset, Lisp_Object ascii)
 {
@@ -213,28 +213,28 @@ set_fontset_ascii (Lisp_Object fontset, Lisp_Object ascii)
 
 /* Access special values of (realized) FONTSET.  */
 
-#define FONTSET_BASE(fontset) XCHAR_TABLE (fontset)->extras[3]
+#define FONTSET_BASE(fontset) CT_EXTRAS (fontset, 3)
 static void
 set_fontset_base (Lisp_Object fontset, Lisp_Object base)
 {
   set_char_table_extras (fontset, 3, base);
 }
 
-#define FONTSET_FRAME(fontset) XCHAR_TABLE (fontset)->extras[4]
+#define FONTSET_FRAME(fontset) CT_EXTRAS (fontset, 4)
 static void
 set_fontset_frame (Lisp_Object fontset, Lisp_Object frame)
 {
   set_char_table_extras (fontset, 4, frame);
 }
 
-#define FONTSET_NOFONT_FACE(fontset) XCHAR_TABLE (fontset)->extras[5]
+#define FONTSET_NOFONT_FACE(fontset) CT_EXTRAS (fontset, 5)
 static void
 set_fontset_nofont_face (Lisp_Object fontset, Lisp_Object face)
 {
   set_char_table_extras (fontset, 5, face);
 }
 
-#define FONTSET_DEFAULT(fontset) XCHAR_TABLE (fontset)->extras[6]
+#define FONTSET_DEFAULT(fontset) CT_EXTRAS (fontset, 6)
 static void
 set_fontset_default (Lisp_Object fontset, Lisp_Object def)
 {
@@ -243,7 +243,7 @@ set_fontset_default (Lisp_Object fontset, Lisp_Object def)
 
 /* For both base and realized fontset.  */
 
-#define FONTSET_FALLBACK(fontset) XCHAR_TABLE (fontset)->extras[7]
+#define FONTSET_FALLBACK(fontset) CT_EXTRAS (fontset, 7)
 static void
 set_fontset_fallback (Lisp_Object fontset, Lisp_Object fallback)
 {
@@ -458,7 +458,7 @@ reorder_font_vector (Lisp_Object font_group, struct font *font)
     }
 
   if (score_changed)
-    qsort (XVECTOR (vec)->contents, size, word_size,
+    qsort (XVECTOR_CONTENTS (vec), size, word_size,
 	   fontset_compare_rfontdef);
   EMACS_INT low_tick_bits = charset_ordered_list_tick & MOST_POSITIVE_FIXNUM;
   XSETCAR (font_group, make_fixnum (low_tick_bits));
@@ -1608,7 +1608,7 @@ to be shown using the fonts from before the call.  */)
       Lisp_Object val;
 
       range_list = Qnil;
-      script_list = XCHAR_TABLE (Vchar_script_table)->extras[0];
+      script_list = CT_EXTRAS (Vchar_script_table, 0);
       if (! NILP (Fmemq (characters, script_list)))
 	{
 	  if (EQ (characters, Qlatin))

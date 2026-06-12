@@ -870,6 +870,7 @@ usage: (define-charset-internal ...)  */)
   CHECK_SYMBOL (args[charset_arg_name]);
   ASET (attrs, charset_name, args[charset_arg_name]);
 
+
   val = args[charset_arg_code_space];
   for (i = 0, dimension = 0, nchars = 1; ; i++)
     {
@@ -1100,6 +1101,7 @@ usage: (define-charset-internal ...)  */)
   else
     error ("None of :code-offset, :map, :parents are specified");
 
+
   val = args[charset_arg_unify_map];
   if (! NILP (val) && !STRINGP (val))
     CHECK_VECTOR (val);
@@ -1107,6 +1109,7 @@ usage: (define-charset-internal ...)  */)
 
   CHECK_LIST (args[charset_arg_plist]);
   ASET (attrs, charset_plist, args[charset_arg_plist]);
+
 
   hash_hash_t hash_code;
   ptrdiff_t hash_index
@@ -1148,6 +1151,7 @@ usage: (define-charset-internal ...)  */)
       new_definition_p = 1;
     }
 
+
   ASET (attrs, charset_id, make_fixnum (id));
   charset.id = id;
   charset_table.start[id] = charset;
@@ -1165,7 +1169,9 @@ usage: (define-charset-internal ...)  */)
       ISO_CHARSET_TABLE (charset.dimension, charset.iso_chars_96,
 			 charset.iso_final) = id;
       if (new_definition_p)
-	Viso_2022_charset_list = nconc2 (Viso_2022_charset_list, list1i (id));
+	{
+	  Viso_2022_charset_list = nconc2 (Viso_2022_charset_list, list1i (id));
+	}
       if (ISO_CHARSET_TABLE (1, 0, 'J') == id)
 	charset_jisx0201_roman = id;
       else if (ISO_CHARSET_TABLE (2, 0, '@') == id)
@@ -1184,8 +1190,10 @@ usage: (define-charset-internal ...)  */)
       else
 	emacs_mule_bytes[charset.emacs_mule_id] = charset.dimension + 2;
       if (new_definition_p)
-	Vemacs_mule_charset_list = nconc2 (Vemacs_mule_charset_list,
-					   list1i (id));
+	{
+	  Vemacs_mule_charset_list = nconc2 (Vemacs_mule_charset_list,
+					     list1i (id));
+	}
     }
 
   if (new_definition_p)
@@ -1199,8 +1207,8 @@ usage: (define-charset-internal ...)  */)
 
 	  for (tail = Vcharset_ordered_list; CONSP (tail); tail = XCDR (tail))
 	    {
-	      struct charset *cs = CHARSET_FROM_ID (XFIXNUM (XCAR (tail)));
-
+	      int csid = XFIXNUM (XCAR (tail));
+	      struct charset *cs = CHARSET_FROM_ID (csid);
 	      if (cs->supplementary_p)
 		break;
 	    }

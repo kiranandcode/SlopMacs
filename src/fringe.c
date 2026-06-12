@@ -1813,8 +1813,13 @@ init_fringe (void)
 
   fringe_bitmaps = xzalloc (max_fringe_bitmaps * sizeof *fringe_bitmaps);
 
-  static_assert (NIL_IS_ZERO);
   fringe_faces = xzalloc (max_fringe_bitmaps * sizeof *fringe_faces);
+#ifdef HAVE_CHEZ
+  for (int i = 0; i < max_fringe_bitmaps; i++)
+    fringe_faces[i] = Qnil;
+#else
+  static_assert (NIL_IS_ZERO);
+#endif
 }
 
 void

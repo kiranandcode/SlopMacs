@@ -357,7 +357,13 @@ usage: (or CONDITIONS...)  */)
     {
       Lisp_Object arg = XCAR (args);
       args = XCDR (args);
+#ifdef HAVE_CHEZ
+      chez_gc_pin (args);
       val = eval_sub (arg);
+      chez_gc_unpin (args);
+#else
+      val = eval_sub (arg);
+#endif
       if (!NILP (val))
 	break;
     }
@@ -378,7 +384,13 @@ usage: (and CONDITIONS...)  */)
     {
       Lisp_Object arg = XCAR (args);
       args = XCDR (args);
+#ifdef HAVE_CHEZ
+      chez_gc_pin (args);
       val = eval_sub (arg);
+      chez_gc_unpin (args);
+#else
+      val = eval_sub (arg);
+#endif
       if (NILP (val))
 	break;
     }
@@ -396,7 +408,13 @@ usage: (if COND THEN ELSE...)  */)
 {
   Lisp_Object cond;
 
+#ifdef HAVE_CHEZ
+  chez_gc_pin (args);
   cond = eval_sub (XCAR (args));
+  chez_gc_unpin (args);
+#else
+  cond = eval_sub (XCAR (args));
+#endif
 
   if (!NILP (cond))
     return eval_sub (Fcar (XCDR (args)));
@@ -420,14 +438,31 @@ usage: (cond CLAUSES...)  */)
   while (CONSP (args))
     {
       Lisp_Object clause = XCAR (args);
+#ifdef HAVE_CHEZ
+      chez_gc_pin (clause);
+      chez_gc_pin (args);
+#endif
       val = eval_sub (Fcar (clause));
       if (!NILP (val))
 	{
 	  if (!NILP (XCDR (clause)))
 	    val = Fprogn (XCDR (clause));
+#ifdef HAVE_CHEZ
+	  chez_gc_unpin (args);
+	  chez_gc_unpin (clause);
+#endif
 	  break;
 	}
+#ifdef HAVE_CHEZ
+      chez_gc_unpin (clause);
+      {
+	Lisp_Object prev = args;
+	args = XCDR (args);
+	chez_gc_unpin (prev);
+      }
+#else
       args = XCDR (args);
+#endif
     }
 
   return val;
@@ -444,7 +479,15 @@ usage: (progn BODY...)  */)
     {
       Lisp_Object form = XCAR (body);
       body = XCDR (body);
+#ifdef HAVE_CHEZ
+      /* Pin body so the copying GC doesn't invalidate it during
+	 recursive eval_sub (which may trigger readevalloop → GC).  */
+      chez_gc_pin (body);
       val = eval_sub (form);
+      chez_gc_unpin (body);
+#else
+      val = eval_sub (form);
+#endif
     }
 
   return val;
@@ -465,7 +508,13 @@ whose values are discarded.
 usage: (prog1 FIRST BODY...)  */)
   (Lisp_Object args)
 {
+#ifdef HAVE_CHEZ
+  chez_gc_pin (args);
   Lisp_Object val = eval_sub (XCAR (args));
+  chez_gc_unpin (args);
+#else
+  Lisp_Object val = eval_sub (XCAR (args));
+#endif
   prog_ignore (XCDR (args));
   return val;
 }
@@ -491,7 +540,13 @@ usage: (setq [SYM VAL]...)  */)
 	xsignal2 (Qwrong_number_of_arguments, Qsetq, make_fixnum (nargs + 1));
       Lisp_Object arg = XCAR (tail);
       tail = XCDR (tail);
+#ifdef HAVE_CHEZ
+      chez_gc_pin (tail);
       val = eval_sub (arg);
+      chez_gc_unpin (tail);
+#else
+      val = eval_sub (arg);
+#endif
       /* Like for eval_sub, we do not check declared_special here since
 	 it's been done when let-binding.  */
       Lisp_Object lex_binding
@@ -653,6 +708,60 @@ signal a `cyclic-variable-indirection' error.  */)
     error ("Cannot make a constant an alias: %s",
 	   SDATA (SYMBOL_NAME (new_alias)));
 
+#ifdef HAVE_CHEZ
+  /* Ensure non-circularity.  */
+  {
+    Lisp_Object s = base_variable;
+    for (;;)
+      {
+	if (EQ (s, new_alias))
+	  xsignal1 (Qcyclic_variable_indirection, base_variable);
+	if (SYMBOL_REDIRECT (s) != SYMBOL_VARALIAS)
+	  break;
+	s = Svector_ref (s, CHEZ_SYM_SLOT_VAL);
+      }
+  }
+
+  switch (SYMBOL_REDIRECT (new_alias))
+    {
+    case SYMBOL_FORWARDED:
+      error ("Cannot make a built-in variable an alias: %s",
+	     SDATA (SYMBOL_NAME (new_alias)));
+    case SYMBOL_LOCALIZED:
+      error ("Don't know how to make a buffer-local variable an alias: %s",
+	     SDATA (SYMBOL_NAME (new_alias)));
+    case SYMBOL_PLAINVAL:
+    case SYMBOL_VARALIAS:
+      break;
+    default:
+      emacs_abort ();
+    }
+
+  if (NILP (Fboundp (base_variable)))
+    set_internal (base_variable, find_symbol_value (new_alias),
+                  Qnil, SET_INTERNAL_BIND);
+
+  {
+    union specbinding *p;
+    for (p = specpdl_ptr; p > specpdl; )
+      if ((--p)->kind >= SPECPDL_LET
+	  && (EQ (new_alias, specpdl_symbol (p))))
+	error ("Don't know how to make a let-bound variable an alias: %s",
+	       SDATA (SYMBOL_NAME (new_alias)));
+  }
+
+  if (SYMBOL_TRAPPED_WRITE_P (new_alias) == SYMBOL_TRAPPED_WRITE)
+    notify_variable_watchers (new_alias, base_variable, Qdefvaralias, Qnil);
+
+  chez_set_symbol_declared_special (new_alias, true);
+  chez_set_symbol_declared_special (base_variable, true);
+  chez_set_symbol_redirect (new_alias, SYMBOL_VARALIAS);
+  /* Store target symbol in value slot for varalias.  */
+  Svector_set (new_alias, CHEZ_SYM_SLOT_VAL, base_variable);
+  chez_set_symbol_trapped_write (new_alias,
+				 SYMBOL_TRAPPED_WRITE_P (base_variable));
+
+#else /* !HAVE_CHEZ */
   struct Lisp_Symbol *sym = XSYMBOL (new_alias);
 
   /* Ensure non-circularity.  */
@@ -721,6 +830,7 @@ signal a `cyclic-variable-indirection' error.  */)
   sym->u.s.redirect = SYMBOL_VARALIAS;
   SET_SYMBOL_ALIAS (sym, XSYMBOL (base_variable));
   sym->u.s.trapped_write = XSYMBOL (base_variable)->u.s.trapped_write;
+#endif /* !HAVE_CHEZ */
   LOADHIST_ATTACH (new_alias);
   /* Even if docstring is nil: remove old docstring.  */
   Fput (new_alias, Qvariable_documentation, docstring);
@@ -897,7 +1007,7 @@ This is like `defvar' and `defconst' but without affecting the variable's
 value.  */)
   (Lisp_Object symbol, Lisp_Object doc)
 {
-  if (!XSYMBOL (symbol)->u.s.declared_special
+  if (!SYMBOL_DECLARED_SPECIAL_P (symbol)
       && lexbound_p (symbol))
     /* This test tries to catch the situation where we do
        (let ((<foo-var> ...)) ...(<foo-function> ...)....)
@@ -908,7 +1018,11 @@ value.  */)
 	      build_string ("Defining as dynamic an already lexical var"),
 	      symbol);
 
+#ifdef HAVE_CHEZ
+  chez_set_symbol_declared_special (symbol, true);
+#else
   XSYMBOL (symbol)->u.s.declared_special = true;
+#endif
   if (!NILP (doc))
     {
       Fput (symbol, Qvariable_documentation, doc);
@@ -994,7 +1108,7 @@ usage: (defvar SYMBOL &optional INITVALUE DOCSTRING)  */)
       return defvar (sym, exp, CAR (tail), true);
     }
   else if (!NILP (Vinternal_interpreter_environment)
-	   && (SYMBOLP (sym) && !XSYMBOL (sym)->u.s.declared_special))
+	   && (SYMBOLP (sym) && !SYMBOL_DECLARED_SPECIAL_P (sym)))
     /* A simple (defvar foo) with lexical scoping does "nothing" except
        declare that var to be dynamically scoped *locally* (i.e. within
        the current file or let-block).  */
@@ -1071,7 +1185,11 @@ DEFUN ("internal-make-var-non-special", Fmake_var_non_special,
      (Lisp_Object symbol)
 {
   CHECK_SYMBOL (symbol);
+#ifdef HAVE_CHEZ
+  chez_set_symbol_declared_special (symbol, false);
+#else
   XSYMBOL (symbol)->u.s.declared_special = false;
+#endif
   return Qnil;
 }
 
@@ -1104,12 +1222,18 @@ usage: (let* VARLIST BODY...)  */)
 	  var = Fcar (elt);
 	  if (! NILP (Fcdr (XCDR (elt))))
 	    signal_error ("`let' bindings can have only one value-form", elt);
+#ifdef HAVE_CHEZ
+	  chez_gc_pin (varlist);
 	  val = eval_sub (Fcar (XCDR (elt)));
+	  chez_gc_unpin (varlist);
+#else
+	  val = eval_sub (Fcar (XCDR (elt)));
+#endif
 	}
 
       var = maybe_remove_pos_from_symbol (var);
       CHECK_TYPE (BARE_SYMBOL_P (var), Qsymbolp, var);
-      if (!NILP (lexenv) && !XBARE_SYMBOL (var)->u.s.declared_special
+      if (!NILP (lexenv) && !SYMBOL_DECLARED_SPECIAL_P (var)
 	  && NILP (Fmemq (var, Vinternal_interpreter_environment)))
 	/* Lexically bind VAR by adding it to the interpreter's binding
 	   alist.  */
@@ -1167,8 +1291,21 @@ usage: (let VARLIST BODY...)  */)
       else if (! NILP (Fcdr (Fcdr (elt))))
 	signal_error ("`let' bindings can have only one value-form", elt);
       else
-	temps[argnum] = eval_sub (Fcar (Fcdr (elt)));
+	{
+#ifdef HAVE_CHEZ
+	  chez_gc_pin (varlist);
+	  temps[argnum] = eval_sub (Fcar (Fcdr (elt)));
+	  chez_gc_pin (temps[argnum]);
+	  chez_gc_unpin (varlist);
+#else
+	  temps[argnum] = eval_sub (Fcar (Fcdr (elt)));
+#endif
+	}
     }
+#ifdef HAVE_CHEZ
+  for (ptrdiff_t j = 0; j < argnum; j++)
+    chez_gc_unpin (temps[j]);
+#endif
   nvars = argnum;
 
   lexenv = Vinternal_interpreter_environment;
@@ -1183,7 +1320,7 @@ usage: (let VARLIST BODY...)  */)
       CHECK_TYPE (BARE_SYMBOL_P (var), Qsymbolp, var);
       tem = temps[argnum];
 
-      if (!NILP (lexenv) && !XBARE_SYMBOL (var)->u.s.declared_special
+      if (!NILP (lexenv) && !SYMBOL_DECLARED_SPECIAL_P (var)
 	  && NILP (Fmemq (var, Vinternal_interpreter_environment)))
 	/* Lexically bind VAR by adding it to the lexenv alist.  */
 	lexenv = Fcons (Fcons (var, tem), lexenv);
@@ -1214,11 +1351,19 @@ usage: (while TEST BODY...)  */)
 
   test = XCAR (args);
   body = XCDR (args);
+#ifdef HAVE_CHEZ
+  chez_gc_pin (test);
+  chez_gc_pin (body);
+#endif
   while (!NILP (eval_sub (test)))
     {
       maybe_quit ();
       prog_ignore (body);
     }
+#ifdef HAVE_CHEZ
+  chez_gc_unpin (body);
+  chez_gc_unpin (test);
+#endif
 
   return Qnil;
 }
@@ -1295,7 +1440,7 @@ definitions to shadow the loaded ones for use in file byte-compilation.  */)
 	  tem = Fassq (sym, environment);
 	  if (NILP (tem))
 	    {
-	      def = XSYMBOL (sym)->u.s.function;
+	      def = SYMBOL_FUNCTION (sym);
 	      if (!NILP (def))
 		continue;
 	    }
@@ -1961,7 +2106,9 @@ signal_or_quit (Lisp_Object error_symbol, Lisp_Object data, bool continuable)
 
   conditions = Fget (real_error_symbol, Qerror_conditions);
   if (NILP (conditions))
-    signal_error ("Invalid error symbol", real_error_symbol);
+    {
+      signal_error ("Invalid error symbol", real_error_symbol);
+    }
 
   /* Remember from where signal was called.  Skip over the frame for
      `signal' itself.  If a frame for `error' follows, skip that,
@@ -2418,8 +2565,8 @@ this does nothing and returns nil.  */)
   CHECK_STRING (file);
 
   /* If function is defined and not as an autoload, don't override.  */
-  if (!NILP (XSYMBOL (function)->u.s.function)
-      && !AUTOLOADP (XSYMBOL (function)->u.s.function))
+  if (!NILP (SYMBOL_FUNCTION (function))
+      && !AUTOLOADP (SYMBOL_FUNCTION (function)))
     return Qnil;
 
   return Fdefalias (function,
@@ -2599,11 +2746,13 @@ eval_sub (Lisp_Object form)
 
   Lisp_Object original_fun = XCAR (form);
   Lisp_Object original_args = XCDR (form);
+
   CHECK_LIST (original_args);
 
   /* This also protects them from gc.  */
   specpdl_ref count
     = record_in_backtrace (original_fun, &original_args, UNEVALLED);
+
 
   if (debug_on_next_call)
     do_debug_on_call (Qt, count);
@@ -2622,7 +2771,7 @@ eval_sub (Lisp_Object form)
   fun = original_fun;
   if (!SYMBOLP (fun))
     fun = Ffunction (list1 (fun));
-  else if (!NILP (fun) && (fun = XSYMBOL (fun)->u.s.function, SYMBOLP (fun)))
+  else if (!NILP (fun) && (fun = SYMBOL_FUNCTION (fun), SYMBOLP (fun)))
     fun = indirect_function (fun);
 
   if (SUBRP (fun) && !NATIVE_COMP_FUNCTION_DYNP (fun))
@@ -2653,13 +2802,30 @@ eval_sub (Lisp_Object form)
 	    {
 	      Lisp_Object arg = XCAR (args_left);
 	      args_left = XCDR (args_left);
+#ifdef HAVE_CHEZ
+	      chez_gc_pin (args_left);
+	      chez_gc_pin (fun);
+	      vals[argnum] = eval_sub (arg);
+	      chez_gc_pin (vals[argnum]);
+	      argnum++;
+	      chez_gc_unpin (fun);
+	      chez_gc_unpin (args_left);
+#else
 	      vals[argnum++] = eval_sub (arg);
+#endif
 	    }
 
 	  set_backtrace_args (specpdl_ref_to_ptr (count), vals, argnum);
 
 	  val = XSUBR (fun)->function.aMANY (argnum, vals);
 
+#ifdef HAVE_CHEZ
+	  /* Unpin after the function call — args must stay pinned
+	     during execution since the C function may trigger GC
+	     via nested eval/load.  */
+	  for (ptrdiff_t j = 0; j < argnum; j++)
+	    chez_gc_unpin (vals[j]);
+#endif
 	  lisp_eval_depth--;
 	  /* Do the debug-on-exit now, while VALS still exists.  */
 	  if (backtrace_debug_on_exit (specpdl_ref_to_ptr (count)))
@@ -2674,8 +2840,21 @@ eval_sub (Lisp_Object form)
 
 	  for (i = 0; i < maxargs; i++)
 	    {
+#ifdef HAVE_CHEZ
+	      chez_gc_pin (args_left);
+	      chez_gc_pin (fun);
+	      argvals[i] = eval_sub (Fcar (args_left));
+	      chez_gc_pin (argvals[i]);
+	      {
+		Lisp_Object prev = args_left;
+		args_left = Fcdr (args_left);
+		chez_gc_unpin (prev);
+	      }
+	      chez_gc_unpin (fun);
+#else
 	      argvals[i] = eval_sub (Fcar (args_left));
 	      args_left = Fcdr (args_left);
+#endif
 	    }
 
 	  set_backtrace_args (specpdl_ref_to_ptr (count), argvals, numargs);
@@ -2728,6 +2907,13 @@ eval_sub (Lisp_Object form)
 		 cases to this switch.  */
 	      emacs_abort ();
 	    }
+#ifdef HAVE_CHEZ
+	  /* Unlock after the function call — args must stay pinned
+	     during execution since the C function may trigger GC
+	     via nested eval/load.  */
+	  for (int j = 0; j < i; j++)
+	    chez_gc_unpin (argvals[j]);
+#endif
 	}
     }
   else if (CLOSUREP (fun)
@@ -2737,7 +2923,38 @@ eval_sub (Lisp_Object form)
   else
     {
       if (NILP (fun))
-	xsignal1 (Qvoid_function, original_fun);
+	{
+#ifdef HAVE_CHEZ
+	  fprintf (stderr, "[VOID-FUNC] original_fun=%p SYMBOLP=%d",
+		   (void*) original_fun, SYMBOLP (original_fun));
+	  if (SYMBOLP (original_fun))
+	    {
+	      Lisp_Object nm = SYMBOL_NAME (original_fun);
+	      if (STRINGP (nm))
+		fprintf (stderr, " name='%.*s'",
+			 (int) SBYTES (nm), SSDATA (nm));
+	    }
+	  fprintf (stderr, " form_car=%p form_cdr=%p",
+		   (void*) XCAR (form), (void*) XCDR (form));
+	  /* Print first arg if it's a string.  */
+	  {
+	    Lisp_Object args = XCDR (form);
+	    if (CONSP (args))
+	      {
+		Lisp_Object arg1 = XCAR (args);
+		if (STRINGP (arg1))
+		  fprintf (stderr, " arg1='%.*s'",
+			   (int) SBYTES (arg1), SSDATA (arg1));
+		else
+		  fprintf (stderr, " arg1=%p type=%d",
+			   (void*) arg1, XTYPE (arg1));
+	      }
+	  }
+	  fprintf (stderr, "\n");
+	  fflush (stderr);
+#endif
+	  xsignal1 (Qvoid_function, original_fun);
+	}
       if (!CONSP (fun))
 	xsignal1 (Qinvalid_function, original_fun);
       funcar = XCAR (fun);
@@ -2817,7 +3034,7 @@ usage: (apply FUNCTION &rest ARGUMENTS)  */)
 
   /* Optimize for no indirection.  */
   if (SYMBOLP (fun) && !NILP (fun)
-      && (fun = XSYMBOL (fun)->u.s.function, SYMBOLP (fun)))
+      && (fun = SYMBOL_FUNCTION (fun), SYMBOLP (fun)))
     {
       fun = indirect_function (fun);
       if (NILP (fun))
@@ -2832,8 +3049,13 @@ usage: (apply FUNCTION &rest ARGUMENTS)  */)
       /* Avoid making funcall cons up a yet another new vector of arguments
 	 by explicitly supplying nil's for optional values.  */
       SAFE_ALLOCA_LISP (funcall_args, 1 + XSUBR (fun)->max_args);
+#ifdef HAVE_CHEZ
+      for (ptrdiff_t i = numargs + 1; i <= XSUBR (fun)->max_args; i++)
+	funcall_args[i] = Qnil;
+#else
       memclear (funcall_args + numargs + 1,
 		(XSUBR (fun)->max_args - numargs) * word_size);
+#endif
       funcall_nargs = 1 + XSUBR (fun)->max_args;
     }
   else
@@ -3139,7 +3361,7 @@ funcall_general (Lisp_Object fun, ptrdiff_t numargs, Lisp_Object *args)
   Lisp_Object original_fun = fun;
  retry:
   if (SYMBOLP (fun) && !NILP (fun)
-      && (fun = XSYMBOL (fun)->u.s.function, SYMBOLP (fun)))
+      && (fun = SYMBOL_FUNCTION (fun), SYMBOLP (fun)))
     fun = indirect_function (fun);
 
   if (SUBRP (fun) && !NATIVE_COMP_FUNCTION_DYNP (fun))
@@ -3151,7 +3373,64 @@ funcall_general (Lisp_Object fun, ptrdiff_t numargs, Lisp_Object *args)
   else
     {
       if (NILP (fun))
-	xsignal1 (Qvoid_function, original_fun);
+	{
+#ifdef HAVE_CHEZ
+	  fprintf (stderr, "[VOID-FUNC-FC] original_fun=%p Qt=%p EQ=%d SYMBOLP=%d",
+		   (void*) original_fun, (void*) Qt,
+		   EQ (original_fun, Qt), SYMBOLP (original_fun));
+	  if (SYMBOLP (original_fun))
+	    {
+	      Lisp_Object nm = SYMBOL_NAME (original_fun);
+	      if (STRINGP (nm))
+		fprintf (stderr, " name='%.*s'",
+			 (int) SBYTES (nm), SSDATA (nm));
+	    }
+	  fprintf (stderr, " Vstdout=%p EQ_stdout_Qt=%d",
+		   (void*) Vstandard_output,
+		   EQ (Vstandard_output, Qt));
+	  fprintf (stderr, " numargs=%td", numargs);
+	  if (numargs > 0 && args)
+	    {
+	      fprintf (stderr, " arg0=%p", (void*) args[0]);
+	      if (SYMBOLP (args[0]))
+		{
+		  Lisp_Object a0nm = SYMBOL_NAME (args[0]);
+		  if (STRINGP (a0nm))
+		    fprintf (stderr, "(%.*s)",
+			     (int) SBYTES (a0nm), SSDATA (a0nm));
+		}
+	    }
+	  /* Print Emacs Lisp backtrace.  */
+	  fprintf (stderr, "\n  backtrace:");
+	  {
+	    union specbinding *pdl = specpdl_ptr;
+	    int depth = 0;
+	    while (pdl > specpdl && depth < 10)
+	      {
+		pdl--;
+		if (pdl->kind == SPECPDL_BACKTRACE)
+		  {
+		    Lisp_Object f = pdl->bt.function;
+		    if (SYMBOLP (f))
+		      {
+			Lisp_Object fn = SYMBOL_NAME (f);
+			if (STRINGP (fn))
+			  fprintf (stderr, " %.*s",
+				   (int) SBYTES (fn), SSDATA (fn));
+		      }
+		    else if (SUBRP (f))
+		      fprintf (stderr, " <subr>");
+		    else
+		      fprintf (stderr, " ?%p", (void*)f);
+		    depth++;
+		  }
+	      }
+	  }
+	  fprintf (stderr, "\n");
+	  fflush (stderr);
+#endif
+	  xsignal1 (Qvoid_function, original_fun);
+	}
       if (!CONSP (fun))
 	xsignal1 (Qinvalid_function, original_fun);
       Lisp_Object funcar = XCAR (fun);
@@ -3255,7 +3534,14 @@ funcall_subr (struct Lisp_Subr *subr, ptrdiff_t numargs, Lisp_Object *args)
 	      eassume (maxargs <= ARRAYELTS (argbuf));
 	      a = argbuf;
 	      memcpy (a, args, numargs * word_size);
+#ifdef HAVE_CHEZ
+	      /* In Chez mode, nil is Snil (0x26), not 0x0.
+		 Fill missing optional args with Qnil.  */
+	      for (ptrdiff_t i = numargs; i < maxargs; i++)
+		a[i] = Qnil;
+#else
 	      memclear (a + numargs, (maxargs - numargs) * word_size);
+#endif
 	    }
 	  else
 	    a = args;
@@ -3313,13 +3599,38 @@ apply_lambda (Lisp_Object fun, Lisp_Object args, specpdl_ref count)
   for (ptrdiff_t i = 0; i < numargs; i++)
     {
       tem = Fcar (args_left), args_left = Fcdr (args_left);
+#ifdef HAVE_CHEZ
+      /* Pin locals that must survive across eval_sub.
+	 args_left (next cons) and fun (used after loop) could be
+	 moved by Chez's copying GC if it fires during eval_sub.  */
+      chez_gc_pin (args_left);
+      chez_gc_pin (fun);
+#endif
       tem = eval_sub (tem);
       arg_vector[i] = tem;
+#ifdef HAVE_CHEZ
+      chez_gc_pin (arg_vector[i]);
+      chez_gc_unpin (fun);
+      chez_gc_unpin (args_left);
+#endif
     }
 
   set_backtrace_args (specpdl_ref_to_ptr (count), arg_vector, numargs);
+#ifdef HAVE_CHEZ
+  /* Pin fun across funcall_lambda — it dereferences fun extensively
+     (XCDR, XCAR, AREF) and may trigger GC via nested eval/load.  */
+  chez_gc_pin (fun);
+#endif
   tem = funcall_lambda (fun, numargs, arg_vector);
 
+#ifdef HAVE_CHEZ
+  /* Unpin after the function call — args and fun must stay pinned
+     during execution since the function may trigger GC
+     via nested eval/load.  */
+  chez_gc_unpin (fun);
+  for (ptrdiff_t j = 0; j < numargs; j++)
+    chez_gc_unpin (arg_vector[j]);
+#endif
   lisp_eval_depth--;
   /* Do the debug-on-exit now, while arg_vector still exists.  */
   if (backtrace_debug_on_exit (specpdl_ref_to_ptr (count)))
@@ -3486,7 +3797,7 @@ list dynamically.  */)
   function = original;
   if (SYMBOLP (function) && !NILP (function))
     {
-      function = XSYMBOL (function)->u.s.function;
+      function = SYMBOL_FUNCTION (function);
       if (SYMBOLP (function))
 	function = indirect_function (function);
     }
@@ -3580,6 +3891,11 @@ lambda_arity (Lisp_Object fun)
 bool
 let_shadows_buffer_binding_p (struct Lisp_Symbol *symbol)
 {
+#ifdef HAVE_CHEZ
+  /* Not yet needed in Chez mode — buffer-locals not implemented.  */
+  (void) symbol;
+  return 0;
+#else
   union specbinding *p;
   Lisp_Object buf = Fcurrent_buffer ();
 
@@ -3595,9 +3911,45 @@ let_shadows_buffer_binding_p (struct Lisp_Symbol *symbol)
       }
 
   return 0;
+#endif
 }
 
 static void
+#ifdef HAVE_CHEZ
+do_specbind (Lisp_Object sym_obj, union specbinding *bind,
+             Lisp_Object value, enum Set_Internal_Bind bindflag)
+{
+  switch (SYMBOL_REDIRECT (sym_obj))
+    {
+    case SYMBOL_PLAINVAL:
+      if (!SYMBOL_TRAPPED_WRITE_P (sym_obj))
+	SET_SYMBOL_VAL (sym_obj, value);
+      else
+        set_internal (specpdl_symbol (bind), value, Qnil, bindflag);
+      break;
+
+    case SYMBOL_FORWARDED:
+      {
+	lispfwd fwd = (lispfwd) (uintptr_t)
+	  Sfixnum_value (Svector_ref (sym_obj, CHEZ_SYM_SLOT_VAL));
+	if (BUFFER_OBJFWDP (fwd)
+	    && specpdl_kind (bind) == SPECPDL_LET_DEFAULT)
+	  {
+	    set_default_internal (specpdl_symbol (bind), value, bindflag,
+				 NULL);
+	    return;
+	  }
+      }
+      FALLTHROUGH;
+    case SYMBOL_LOCALIZED:
+      set_internal (specpdl_symbol (bind), value, Qnil, bindflag);
+      break;
+
+    default:
+      emacs_abort ();
+    }
+}
+#else
 do_specbind (struct Lisp_Symbol *sym, union specbinding *bind,
              Lisp_Object value, enum Set_Internal_Bind bindflag)
 {
@@ -3627,6 +3979,7 @@ do_specbind (struct Lisp_Symbol *sym, union specbinding *bind,
       emacs_abort ();
     }
 }
+#endif
 
 /* `specpdl_ptr' describes which variable is
    let-bound, so it can be properly undone when we unbind_to.
@@ -3643,6 +3996,55 @@ do_specbind (struct Lisp_Symbol *sym, union specbinding *bind,
 void
 specbind (Lisp_Object symbol, Lisp_Object value)
 {
+#ifdef HAVE_CHEZ
+ start:
+  switch (SYMBOL_REDIRECT (symbol))
+    {
+    case SYMBOL_VARALIAS:
+      symbol = Svector_ref (symbol, CHEZ_SYM_SLOT_VAL);
+      goto start;
+    case SYMBOL_PLAINVAL:
+      specpdl_ptr->let.kind = SPECPDL_LET;
+      specpdl_ptr->let.symbol = symbol;
+      specpdl_ptr->let.old_value = Svector_ref (symbol, CHEZ_SYM_SLOT_VAL);
+      specpdl_ptr->let.where.kbd = NULL;
+      break;
+    case SYMBOL_LOCALIZED:
+    case SYMBOL_FORWARDED:
+      {
+	Lisp_Object ovalue = find_symbol_value (symbol);
+	specpdl_ptr->let.kind = SPECPDL_LET_LOCAL;
+	specpdl_ptr->let.symbol = symbol;
+	specpdl_ptr->let.old_value = ovalue;
+	specpdl_ptr->let.where.buf = Fcurrent_buffer ();
+
+	if (SYMBOL_REDIRECT (symbol) == SYMBOL_FORWARDED)
+	  {
+	    lispfwd fwd = (lispfwd) (uintptr_t)
+	      Sfixnum_value (Svector_ref (symbol, CHEZ_SYM_SLOT_VAL));
+	    if (BUFFER_OBJFWDP (fwd))
+	      {
+		if (NILP (Flocal_variable_p (symbol, Qnil)))
+		  specpdl_ptr->let.kind = SPECPDL_LET_DEFAULT;
+	      }
+	    else if (KBOARD_OBJFWDP (fwd))
+	      {
+		specpdl_ptr->let.where.kbd = kboard_for_bindings ();
+		specpdl_ptr->let.kind = SPECPDL_LET;
+	      }
+	    else
+	      specpdl_ptr->let.kind = SPECPDL_LET;
+	  }
+	/* SYMBOL_LOCALIZED: not yet implemented, treat as LET_LOCAL.  */
+
+	break;
+      }
+    default: emacs_abort ();
+    }
+  grow_specpdl ();
+  do_specbind (symbol, specpdl_ptr - 1, value, SET_INTERNAL_BIND);
+
+#else /* !HAVE_CHEZ */
   /* The caller must ensure that the SYMBOL argument is a bare symbol.  */
   struct Lisp_Symbol *sym = XBARE_SYMBOL (symbol);
 
@@ -3700,6 +4102,7 @@ specbind (Lisp_Object symbol, Lisp_Object value)
     }
   grow_specpdl ();
   do_specbind (sym, specpdl_ptr - 1, value, SET_INTERNAL_BIND);
+#endif /* !HAVE_CHEZ */
 }
 
 /* Push unwind-protect entries of various types.  */
@@ -3837,6 +4240,17 @@ do_one_unbind (union specbinding *this_binding, bool unwinding,
       { /* If variable has a trivial value (no forwarding), and isn't
 	   trapped, we can just set it.  */
 	Lisp_Object sym = specpdl_symbol (this_binding);
+#ifdef HAVE_CHEZ
+	if (SYMBOLP (sym) && SYMBOL_REDIRECT (sym) == SYMBOL_PLAINVAL)
+	  {
+	    if (SYMBOL_TRAPPED_WRITE_P (sym) == SYMBOL_UNTRAPPED_WRITE)
+	      SET_SYMBOL_VAL (sym, specpdl_old_value (this_binding));
+	    else
+	      set_internal (sym, specpdl_old_value (this_binding),
+                            Qnil, bindflag);
+	    break;
+	  }
+#else
 	if (SYMBOLP (sym) && XSYMBOL (sym)->u.s.redirect == SYMBOL_PLAINVAL)
 	  {
 	    if (XSYMBOL (sym)->u.s.trapped_write == SYMBOL_UNTRAPPED_WRITE)
@@ -3846,6 +4260,7 @@ do_one_unbind (union specbinding *this_binding, bool unwinding,
                             Qnil, bindflag);
 	    break;
 	  }
+#endif
       }
       /* Come here only if make_local_foo was used for the first time
 	 on this var within this let or the symbol is not a plainval.  */
@@ -3958,7 +4373,7 @@ context where binding is lexical by default.  */)
   (Lisp_Object symbol)
 {
    CHECK_SYMBOL (symbol);
-   return XSYMBOL (symbol)->u.s.declared_special ? Qt : Qnil;
+   return SYMBOL_DECLARED_SPECIAL_P (symbol) ? Qt : Qnil;
 }
 
 
@@ -4168,11 +4583,19 @@ specpdl_unrewind (union specbinding *pdl, int distance, bool vars_only)
 	       since that was already done by specbind.  */
 	    Lisp_Object sym = specpdl_symbol (tmp);
 	    if (SYMBOLP (sym)
+#ifdef HAVE_CHEZ
+		&& SYMBOL_REDIRECT (sym) == SYMBOL_PLAINVAL)
+	      {
+		Lisp_Object old_value = specpdl_old_value (tmp);
+		set_specpdl_old_value (tmp, Svector_ref (chez_resolve_symbol (sym), CHEZ_SYM_SLOT_VAL));
+		SET_SYMBOL_VAL (sym, old_value);
+#else
 		&& XSYMBOL (sym)->u.s.redirect == SYMBOL_PLAINVAL)
 	      {
 		Lisp_Object old_value = specpdl_old_value (tmp);
 		set_specpdl_old_value (tmp, SYMBOL_VAL (XSYMBOL (sym)));
 		SET_SYMBOL_VAL (XSYMBOL (sym), old_value);
+#endif
 		break;
 	      }
 	  }

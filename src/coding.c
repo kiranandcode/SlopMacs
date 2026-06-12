@@ -6906,7 +6906,7 @@ get_translation_table (Lisp_Object attrs, bool encodep, int *max_lookup)
       if (CHAR_TABLE_P (translation_table)
 	  && CHAR_TABLE_EXTRA_SLOTS (XCHAR_TABLE (translation_table)) > 1)
 	{
-	  val = XCHAR_TABLE (translation_table)->extras[1];
+	  val = CT_EXTRAS (translation_table, 1);
 	  if (FIXNATP (val) && *max_lookup < XFIXNAT (val))
 	    *max_lookup = min (XFIXNAT (val), MAX_LOOKUP_MAX);
 	}
@@ -6918,7 +6918,7 @@ get_translation_table (Lisp_Object attrs, bool encodep, int *max_lookup)
 	    if (CHAR_TABLE_P (XCAR (tail))
 		&& CHAR_TABLE_EXTRA_SLOTS (XCHAR_TABLE (XCAR (tail))) > 1)
 	      {
-		Lisp_Object tailval = XCHAR_TABLE (XCAR (tail))->extras[1];
+		Lisp_Object tailval = CT_EXTRAS (XCAR (tail), 1);
 		if (FIXNATP (tailval) && *max_lookup < XFIXNAT (tailval))
 		  *max_lookup = min (XFIXNAT (tailval), MAX_LOOKUP_MAX);
 	      }
@@ -11975,6 +11975,7 @@ Don't modify this variable directly, but use `set-coding-system-priority'.  */);
 	= Fcons (AREF (Vcoding_category_table, i),
 		 Vcoding_category_list);
   }
+
 
   DEFVAR_LISP ("coding-system-for-read", Vcoding_system_for_read,
 	       doc: /* Specify the coding system for read operations.

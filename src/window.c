@@ -4387,8 +4387,14 @@ set_window_buffer (Lisp_Object window, Lisp_Object buffer,
   record_unwind_current_buffer ();
   Fset_buffer (buffer);
 
-  XMARKER (w->pointm)->insertion_type = !NILP (Vwindow_point_insertion_type);
-  XMARKER (w->old_pointm)->insertion_type = !NILP (Vwindow_point_insertion_type);
+  {
+    struct Lisp_Marker *pm = XMARKER (w->pointm);
+    pm->insertion_type = !NILP (Vwindow_point_insertion_type);
+  }
+  {
+    struct Lisp_Marker *opm = XMARKER (w->old_pointm);
+    opm->insertion_type = !NILP (Vwindow_point_insertion_type);
+  }
 
   if (!keep_margins_p)
     {

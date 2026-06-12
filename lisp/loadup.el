@@ -57,7 +57,7 @@
 ;; Add subdirectories to the load-path for files that might get
 ;; autoloaded when bootstrapping or running Emacs normally.
 ;; This is because PATH_DUMPLOADSEARCH is just "../lisp".
-(if (or (member dump-mode '("pbootstrap"))
+(if (or (member dump-mode '("pbootstrap" "bootstrap"))
 	;; FIXME this is irritatingly fragile.
         (and (stringp (nth 4 command-line-args))
              (string-match "^unidata-gen\\(\\.elc?\\)?$"
@@ -141,7 +141,6 @@
 ;; xdisp.c).
 (setq resize-mini-windows 'grow-only)
 (setq load-source-file-function #'load-with-code-conversion)
-(load "files")
 
 ;; Load-time macro-expansion can only take effect after setting
 ;; load-source-file-function because of where it is called in lread.c.
@@ -153,8 +152,25 @@
   ;; disable eager macro-expansion while loading pcase.
   (let ((macroexp--pending-eager-loads '(skip))) (load "emacs-lisp/pcase"))
   ;; Re-load macroexp so as to eagerly macro-expand its uses of pcase.
-  (let ((max-lisp-eval-depth (* 2 max-lisp-eval-depth)))
+  ;; In interpreted mode (Chez bootstrap), also skip eager expansion here
+  ;; because the current macroexpander still has un-expanded pcase in its
+  ;; body, making eager expansion extremely slow.
+  (let ((max-lisp-eval-depth (* 2 max-lisp-eval-depth))
+        (macroexp--pending-eager-loads
+         (if (compiled-function-p (symbol-function 'macroexpand-all))
+             macroexp--pending-eager-loads
+           '(skip))))
     (load "emacs-lisp/macroexp")))
+
+;; In Chez bootstrap mode (interpreted, no byte-compiler), eager
+;; macro-expansion is extremely slow because macroexp--expand-all
+;; uses pcase which must be re-expanded at every call.  Disable eager
+;; expansion for the rest of bootstrap loading.  Macros still work
+;; correctly — they are expanded lazily by eval_sub when called.
+(when (not (compiled-function-p (symbol-function 'macroexpand-all)))
+  (setq macroexp--pending-eager-loads '(skip)))
+
+(load "files")
 
 (load "cus-face")
 (load "faces")  ; after here, `defface' may be used.

@@ -20,6 +20,14 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #ifndef EMACS_LISP_H
 #define EMACS_LISP_H
 
+/* When using Chez Scheme, pdumper and native comp are not used.
+   config.h may still define HAVE_PDUMPER from earlier AC_DEFINE;
+   undefine it here to ensure all #ifdef checks work correctly.  */
+#ifdef HAVE_CHEZ
+# undef HAVE_PDUMPER
+# undef HAVE_NATIVE_COMP
+#endif
+
 #include <alloca.h>
 #include <setjmp.h>
 #include <stdarg.h>
@@ -228,6 +236,7 @@ enum Lisp_Bits
     FIXNUM_BITS = VALBITS + 1
   };
 
+#ifndef HAVE_CHEZ
 /* Number of bits in a fixnum tag; can be used in #if.  */
 DEFINE_GDB_SYMBOL_BEGIN (int, INTTYPEBITS)
 #define INTTYPEBITS (GCTYPEBITS - 1)
@@ -258,11 +267,22 @@ DEFINE_GDB_SYMBOL_BEGIN (bool, USE_LSB_TAG)
 # define USE_LSB_TAG (VAL_MAX / 2 < INTPTR_MAX)
 #endif
 DEFINE_GDB_SYMBOL_END (USE_LSB_TAG)
+#endif /* !HAVE_CHEZ */
 
+#ifdef HAVE_CHEZ
+/* When using Chez Scheme as the runtime, Lisp_Object is Chez's ptr type.
+   lisp_chez.h provides all core type definitions, predicates, constructors,
+   and accessors.  It is included here, after EMACS_INT, INLINE, eassert,
+   and ENUM_BF are all defined.  */
+# include "lisp_chez.h"
+#endif
+
+#ifndef HAVE_CHEZ
 /* Mask for the value (as opposed to the type bits) of a Lisp object.  */
 DEFINE_GDB_SYMBOL_BEGIN (EMACS_INT, VALMASK)
 # define VALMASK (USE_LSB_TAG ? - (1 << GCTYPEBITS) : VAL_MAX)
 DEFINE_GDB_SYMBOL_END (VALMASK)
+#endif /* !HAVE_CHEZ — VALMASK */
 
 /* Ignore 'alignas' on compilers lacking it.  */
 #if !HAVE_C_ALIGNASOF && !defined alignas
@@ -273,6 +293,7 @@ DEFINE_GDB_SYMBOL_END (VALMASK)
    internal representation of tagged pointers.  It is 2**GCTYPEBITS if
    USE_LSB_TAG, 1 otherwise.  It must be a literal integer constant,
    for older versions of GCC (through at least 4.9).  */
+#ifndef HAVE_CHEZ
 #if USE_LSB_TAG
 # define GCALIGNMENT IDEAL_GCALIGNMENT
 # if GCALIGNMENT != 1 << GCTYPEBITS
@@ -281,6 +302,9 @@ DEFINE_GDB_SYMBOL_END (VALMASK)
 #else
 # define GCALIGNMENT 1
 #endif
+#else /* HAVE_CHEZ */
+# define GCALIGNMENT 1
+#endif /* HAVE_CHEZ */
 
 /* To cause a union to have alignment of at least GCALIGNMENT, put
    GCALIGNED_UNION_MEMBER in its member list.
@@ -309,6 +333,17 @@ DEFINE_GDB_SYMBOL_END (VALMASK)
 # define GCALIGNED_STRUCT
 #endif
 #define GCALIGNED(type) (alignof (type) % GCALIGNMENT == 0)
+
+/* Idea stolen from GDB.  Although all known Emacs targets support enum
+   bitfields, the C standard does not require support, and they cause too
+   many diagnostics on xlc 16.1 and on Oracle Studio 12.6 'cc -Xc'.  */
+#if defined __IBMC__ || (defined __SUNPRO_C && __STDC__)
+#define ENUM_BF(TYPE) unsigned int
+#else
+#define ENUM_BF(TYPE) enum TYPE
+#endif
+
+#ifndef HAVE_CHEZ
 
 /* Lisp_Word is a scalar word suitable for holding a tagged pointer or
    integer.  Usually it is a pointer to a deliberately-incomplete type
@@ -475,14 +510,8 @@ typedef EMACS_INT Lisp_Word;
    extending their range from, e.g., -2^28..2^28-1 to -2^29..2^29-1.  */
 #define INTMASK (EMACS_INT_MAX >> (INTTYPEBITS - 1))
 
-/* Idea stolen from GDB.  Although all known Emacs targets support enum
-   bitfields, the C standard does not require support, and they cause too
-   many diagnostics on xlc 16.1 and on Oracle Studio 12.6 'cc -Xc'.  */
-#if defined __IBMC__ || (defined __SUNPRO_C && __STDC__)
-#define ENUM_BF(TYPE) unsigned int
-#else
-#define ENUM_BF(TYPE) enum TYPE
-#endif
+/* ENUM_BF is now defined earlier (before #ifndef HAVE_CHEZ) so it is
+   available in both Chez and non-Chez modes.  */
 
 
 /* Lisp_Object tagging scheme:
@@ -599,6 +628,8 @@ typedef Lisp_Word Lisp_Object;
 enum CHECK_LISP_OBJECT_TYPE { CHECK_LISP_OBJECT_TYPE = false };
 #endif
 
+#endif /* !HAVE_CHEZ — end of traditional Emacs type system */
+
 /* Forward declarations.  */
 
 /* Defined in this file.  */
@@ -717,6 +748,7 @@ INLINE void *
   return lisp_h_XLP (o);
 }
 
+#ifndef HAVE_CHEZ
 /* Extract A's type.  */
 
 INLINE enum Lisp_Type
@@ -729,6 +761,7 @@ INLINE enum Lisp_Type
   return USE_LSB_TAG ? i & ~VALMASK : i >> VALBITS;
 #endif
 }
+#endif /* !HAVE_CHEZ */
 
 /* True if A has type tag TAG.
    Equivalent to XTYPE (a) == TAG, but often faster.  */
@@ -745,12 +778,14 @@ INLINE void
   lisp_h_CHECK_TYPE (ok, predicate, x);
 }
 
+#ifndef HAVE_CHEZ
 /* Extract A's pointer value, assuming A's Lisp type is TYPE and the
    extracted pointer's type is CTYPE *.  When !USE_LSB_TAG this simply
    extracts A's low-order bits, as (uintptr_t) LISP_WORD_TAG (type) is
    always zero then.  */
 #define XUNTAG(a, type, ctype) \
   ((ctype *) ((uintptr_t) XLP (a) - (uintptr_t) LISP_WORD_TAG (type)))
+#endif
 
 /* A forwarding pointer to a value.  It uses a generic pointer to
    avoid alignment bugs that could occur if it used a pointer to a
@@ -759,6 +794,7 @@ INLINE void
    help static checking.  */
 typedef const struct Lisp_Fwd *lispfwd;
 
+#ifndef HAVE_CHEZ
 /* Interned state of a symbol.  */
 
 enum symbol_interned
@@ -828,6 +864,7 @@ struct Lisp_Symbol
   } u;
 };
 static_assert (GCALIGNED (struct Lisp_Symbol));
+#endif /* !HAVE_CHEZ — symbol struct */
 
 /* Declare a Lisp-callable function.  The MAXARGS parameter has the same
    meaning as in the DEFUN macro, and is used to construct a prototype.  */
@@ -854,6 +891,7 @@ static_assert (GCALIGNED (struct Lisp_Symbol));
 #define DEFUN_ARGS_8	(Lisp_Object, Lisp_Object, Lisp_Object, Lisp_Object, \
 			 Lisp_Object, Lisp_Object, Lisp_Object, Lisp_Object)
 
+#ifndef HAVE_CHEZ
 /* Lisp_Word_tag is big enough for a possibly-shifted tag, to be
    added to a pointer value for conversion to a Lisp_Word.  */
 #if LISP_WORDS_ARE_POINTERS
@@ -896,6 +934,19 @@ typedef EMACS_UINT Lisp_Word_tag;
 #ifndef DEFINE_NON_NIL_Q_SYMBOL_MACROS
 # define DEFINE_NON_NIL_Q_SYMBOL_MACROS true
 #endif
+#else /* HAVE_CHEZ */
+/* Chez mode: symbols are heap-allocated vectors, not indexed.  */
+/* In Chez mode, symbol values aren't compile-time constants.
+   Static initializers use NULL; fields are set to proper values
+   at runtime during init.  */
+#define LISPSYM_INITIALLY(name) ((Lisp_Object) 0)
+#define DEFINE_LISP_SYMBOL(name) /* nothing */
+#define SYMBOL_INDEX(sym) i##sym
+#define DEFINE_NON_NIL_Q_SYMBOL_MACROS true
+typedef uintptr_t Lisp_Word_tag;
+#define LISP_WORD_TAG(tag) ((Lisp_Word_tag) 0)
+#define TAG_PTR_INITIALLY(tag, p) ((Lisp_Object) (p))
+#endif /* HAVE_CHEZ */
 
 /* True if N is a power of 2.  N should be positive.  */
 
@@ -911,6 +962,19 @@ typedef EMACS_UINT Lisp_Word_tag;
                        : ((y) - 1 + (x)) - ((y) - 1 + (x)) % (y))
 
 #include <globals.h>
+
+#ifdef HAVE_CHEZ
+/* globals.h redefines Qnil and Qt as builtin_lisp_symbol() lookups,
+   overriding lisp_chez.h's definitions.  In Chez mode, Qnil must be
+   Snil (the Chez empty list) for list operations to work correctly.
+   Qt stays as chez_symbols[iQt] (a symbol vector) so that EQ checks
+   with reader-produced 't' work correctly.  */
+# undef Qnil
+# define Qnil Snil
+/* Qt = builtin_lisp_symbol(1) = chez_symbols[1], which is the symbol
+   vector for 't'.  This matches what the reader/Fintern produces, so
+   EQ(reader_t, Qt) works.  Do NOT redefine Qt to Strue.  */
+#endif
 
 /* Header of vector-like objects.  This documents the layout constraints on
    vectors and pseudovectors (objects of PVEC_xxx subtype).  It also prevents
@@ -1046,11 +1110,14 @@ enum More_Lisp_Bits
    XCONS (tem) is the struct Lisp_Cons * pointing to the memory for
    that cons.  */
 
+#ifndef HAVE_CHEZ
 /* Largest and smallest representable fixnum values.  These are the C
    values.  They are macros for use in #if and static initializers.  */
 #define MOST_POSITIVE_FIXNUM (EMACS_INT_MAX >> INTTYPEBITS)
 #define MOST_NEGATIVE_FIXNUM (-1 - MOST_POSITIVE_FIXNUM)
+#endif /* !HAVE_CHEZ */
 
+#ifndef HAVE_CHEZ
 INLINE bool
 PSEUDOVECTORP (Lisp_Object a, int code)
 {
@@ -1059,7 +1126,9 @@ PSEUDOVECTORP (Lisp_Object a, int code)
 	       & (PSEUDOVECTOR_FLAG | PVEC_TYPE_MASK))
 	      == (PSEUDOVECTOR_FLAG | (code << PSEUDOVECTOR_AREA_BITS))));
 }
+#endif /* !HAVE_CHEZ */
 
+#ifndef HAVE_CHEZ
 INLINE bool
 (BARE_SYMBOL_P) (Lisp_Object x)
 {
@@ -1167,15 +1236,41 @@ c_symbol_p (struct Lisp_Symbol *sym)
       return 0 <= offset && offset < sizeof lispsym;
     }
 }
+#else /* HAVE_CHEZ */
+/* Chez mode: provide compat stubs for symbol functions.  */
+INLINE Lisp_Object
+maybe_remove_pos_from_symbol (Lisp_Object x)
+{
+  return x;  /* no symbols-with-position in Chez mode */
+}
 
+INLINE bool
+c_symbol_p (struct Lisp_Symbol *sym)
+{
+  (void) sym;
+  return false;  /* no lispsym array in Chez mode */
+}
+
+INLINE Lisp_Object
+make_lisp_symbol (struct Lisp_Symbol *sym)
+{
+  (void) sym;
+  abort ();  /* should not be called in Chez mode */
+  return Qnil;
+}
+#endif /* HAVE_CHEZ — symbol functions */
+
+#ifndef HAVE_CHEZ
 INLINE void
 (CHECK_SYMBOL) (Lisp_Object x)
 {
   lisp_h_CHECK_SYMBOL (x);
 }
+#endif
 
 /* True if the possibly-unsigned integer I doesn't fit in a fixnum.  */
 
+#ifndef HAVE_CHEZ
 #define FIXNUM_OVERFLOW_P(i) \
   (! ((0 <= (i) || MOST_NEGATIVE_FIXNUM <= (i)) && (i) <= MOST_POSITIVE_FIXNUM))
 
@@ -1302,7 +1397,16 @@ make_fixed_natnum (EMACS_INT n)
   EMACS_INT int0 = Lisp_Int0;
   return USE_LSB_TAG ? make_fixnum (n) : XIL (n + (int0 << VALBITS));
 }
+#else /* HAVE_CHEZ */
+INLINE Lisp_Object
+make_fixed_natnum (EMACS_INT n)
+{
+  eassert (0 <= n && n <= MOST_POSITIVE_FIXNUM);
+  return make_fixnum (n);
+}
+#endif /* !HAVE_CHEZ — fixnum section */
 
+#ifndef HAVE_CHEZ
 /* Return true if X and Y are the same object.  */
 INLINE bool
 (BASE_EQ) (Lisp_Object x, Lisp_Object y)
@@ -1322,6 +1426,7 @@ EQ (Lisp_Object x, Lisp_Object y)
   else
     return slow_eq (x, y);
 }
+#endif /* !HAVE_CHEZ */
 
 INLINE intmax_t
 clip_to_bounds (intmax_t lower, intmax_t num, intmax_t upper)
@@ -1329,6 +1434,7 @@ clip_to_bounds (intmax_t lower, intmax_t num, intmax_t upper)
   return max (lower, min (num, upper));
 }
 
+#ifndef HAVE_CHEZ
 /* Construct a Lisp_Object from a value or address.  */
 
 INLINE Lisp_Object
@@ -1338,6 +1444,7 @@ make_lisp_ptr (void *ptr, enum Lisp_Type type)
   eassert (TAGGEDP (a, type) && XUNTAG (a, type, char) == ptr);
   return a;
 }
+#endif /* !HAVE_CHEZ */
 
 #define XSETINT(a, b) ((a) = make_fixnum (b))
 #define XSETFASTINT(a, b) ((a) = make_fixed_natnum (b))
@@ -1358,6 +1465,7 @@ dead_object (void)
 
 /* Pseudovector types.  */
 
+#ifndef HAVE_CHEZ
 #define XSETPVECTYPE(v, code)						\
   ((v)->header.size |= PSEUDOVECTOR_FLAG | ((code) << PSEUDOVECTOR_AREA_BITS))
 #define PVECHEADERSIZE(code, lispsize, restsize) \
@@ -1377,6 +1485,35 @@ dead_object (void)
   (XSETVECTOR (a, b),							\
    eassert ((size & (PSEUDOVECTOR_FLAG | PVEC_TYPE_MASK))		\
 	    == (PSEUDOVECTOR_FLAG | (code << PSEUDOVECTOR_AREA_BITS))))
+#else /* HAVE_CHEZ */
+/* In Chez mode, XSETPVECTYPE is called on both:
+   1. C-allocated structs (header.size field) — from allocate_pseudovector etc.
+   2. Chez-native vectors (from make_vector) — slot 0 is the tag.
+   Distinguish by checking low 3 bits: Chez vectors have tag 0x7,
+   C pointers are 8-byte aligned (low 3 bits = 0).  */
+#define XSETPVECTYPE(v, code)						\
+  do {									\
+    uintptr_t _pv = (uintptr_t)(v);					\
+    if ((_pv & 0x7) == 0x7)						\
+      Svector_set ((Lisp_Object) _pv, 0,				\
+		   Sfixnum (CHEZ_PVEC_BASE + (code)));			\
+    else								\
+      ((struct Lisp_Vector *) _pv)->header.size |=			\
+	PSEUDOVECTOR_FLAG | ((code) << PSEUDOVECTOR_AREA_BITS);		\
+  } while (0)
+/* PVECHEADERSIZE and XSETPVECTYPESIZE only operate on C-allocated structs.  */
+#define PVECHEADERSIZE(code, lispsize, restsize) \
+  (PSEUDOVECTOR_FLAG | ((code) << PSEUDOVECTOR_AREA_BITS) \
+   | ((restsize) << PSEUDOVECTOR_SIZE_BITS) | (lispsize))
+#define XSETPVECTYPESIZE(v, code, lispsize, restsize)		\
+  ((v)->header.size = PVECHEADERSIZE (code, lispsize, restsize))
+/* In Chez mode, pseudovector assignment wraps the C struct pointer
+   in a Chez vector via chez_wrap_c_pseudovector.  */
+#define XSETPSEUDOVECTOR(a, b, code) \
+  ((a) = chez_wrap_c_pseudovector (b))
+#define XSETTYPED_PSEUDOVECTOR(a, b, size, code) \
+  ((a) = chez_wrap_c_pseudovector (b))
+#endif /* HAVE_CHEZ */
 
 #define XSETWINDOW_CONFIGURATION(a, b) \
   XSETPSEUDOVECTOR (a, b, PVEC_WINDOW_CONFIGURATION)
@@ -1423,6 +1560,7 @@ make_pointer_integer (void *p)
 
 typedef struct interval *INTERVAL;
 
+#ifndef HAVE_CHEZ
 struct Lisp_Cons
 {
   union
@@ -1549,7 +1687,9 @@ CDR_SAFE (Lisp_Object c)
 {
   return CONSP (c) ? XCDR (c) : Qnil;
 }
+#endif /* !HAVE_CHEZ — cons section */
 
+#ifndef HAVE_CHEZ
 /* In a string or vector, the sign bit of u.s.size is the gc mark bit.  */
 
 struct Lisp_String
@@ -1723,7 +1863,46 @@ string_immovable_p (Lisp_Object str)
 {
   return XSTRING (str)->u.s.size_byte == -3;
 }
+#else /* HAVE_CHEZ — string section */
+#define STRING_BYTES_BOUND  \
+  ((ptrdiff_t) min (MOST_POSITIVE_FIXNUM, min (SIZE_MAX, PTRDIFF_MAX) - 1))
 
+/* In Chez mode, strings are Chez bytevectors managed by Chez GC.
+   They're effectively immovable between safe points.  */
+INLINE bool
+string_immovable_p (Lisp_Object str)
+{
+  (void) str;
+  return true;
+}
+
+INLINE void
+CHECK_STRING_NULL_BYTES (Lisp_Object string)
+{
+  CHECK_TYPE (memchr (SSDATA (string), '\0', SBYTES (string)) == NULL,
+	      Qfilenamep, string);
+}
+
+/* Mark STR as a unibyte string.  */
+#define STRING_SET_UNIBYTE(STR)                         \
+  do {                                                  \
+    if (SCHARS (STR) == 0)                              \
+      (STR) = empty_unibyte_string;                     \
+    else                                                \
+      Svector_set ((STR), CHEZ_STR_SLOT_SIZEBYTE,       \
+                   Sfixnum (-1));                        \
+  } while (false)
+
+/* Mark STR as a multibyte string.  */
+INLINE void
+STRING_SET_MULTIBYTE (Lisp_Object str)
+{
+  eassert (SCHARS (str) > 0);
+  Svector_set (str, CHEZ_STR_SLOT_SIZEBYTE, Sfixnum (SBYTES (str)));
+}
+#endif /* !HAVE_CHEZ — string section */
+
+#ifndef HAVE_CHEZ
 /* A regular vector is just a header plus an array of Lisp_Objects.  */
 
 struct Lisp_Vector
@@ -1777,8 +1956,45 @@ CHECK_VECTOR (Lisp_Object x)
 {
   CHECK_TYPE (VECTORP (x), Qvectorp, x);
 }
+#else /* HAVE_CHEZ */
+/* Chez mode: provide compat stubs for vector operations.  */
+struct Lisp_Vector
+  {
+    union vectorlike_header header;
+    Lisp_Object contents[1];
+  };
+
+INLINE struct Lisp_Vector *
+XVECTOR (Lisp_Object a)
+{
+  /* In Chez mode, return the Chez vector cast as a struct pointer.
+     This pointer must ONLY be used with XSETPVECTYPE (which is
+     overridden to modify slot 0 of the Chez vector).  Never
+     dereference this as a real struct Lisp_Vector.  */
+  return (struct Lisp_Vector *)(uintptr_t) a;
+}
+
+INLINE ptrdiff_t
+gc_asize (Lisp_Object array)
+{
+  return ASIZE (array);
+}
+
+INLINE ptrdiff_t
+PVSIZE (Lisp_Object pv)
+{
+  return ASIZE (pv);  /* no PSEUDOVECTOR_SIZE_MASK in Chez mode */
+}
+
+INLINE void
+CHECK_VECTOR (Lisp_Object x)
+{
+  CHECK_TYPE (VECTORP (x), Qvectorp, x);
+}
+#endif /* HAVE_CHEZ — vector section */
 
 
+#ifndef HAVE_CHEZ
 /* A pseudovector is like a vector, but has other non-Lisp components.  */
 
 INLINE enum pvec_type
@@ -1799,6 +2015,74 @@ PSEUDOVECTOR_TYPEP (const union vectorlike_header *a, enum pvec_type code)
   return ((a->size & (PSEUDOVECTOR_FLAG | PVEC_TYPE_MASK))
 	  == (PSEUDOVECTOR_FLAG | (code << PSEUDOVECTOR_AREA_BITS)));
 }
+#else /* HAVE_CHEZ */
+INLINE enum pvec_type
+PSEUDOVECTOR_TYPE (const struct Lisp_Vector *v)
+{
+  /* In Chez mode, v is really a Chez vector cast.  Extract pvec_type
+     from slot 0 = Sfixnum(CHEZ_PVEC_BASE + pvec_type).  */
+  Lisp_Object obj = (Lisp_Object) v;
+  if (Svectorp (obj) && Svector_length (obj) > 0
+      && Sfixnump (Svector_ref (obj, 0)))
+    {
+      iptr tag = Sfixnum_value (Svector_ref (obj, 0));
+      if (tag >= CHEZ_PVEC_BASE)
+	return (enum pvec_type) (tag - CHEZ_PVEC_BASE);
+    }
+  return PVEC_NORMAL_VECTOR;
+}
+
+INLINE bool
+PSEUDOVECTOR_TYPEP (const union vectorlike_header *a, enum pvec_type code)
+{
+  /* Check the C struct header directly — same logic as non-Chez.  */
+  return ((a->size & (PSEUDOVECTOR_FLAG | PVEC_TYPE_MASK))
+	  == (PSEUDOVECTOR_FLAG | (code << PSEUDOVECTOR_AREA_BITS)));
+}
+
+/* Wrap a C pseudovector pointer in a 2-slot Chez vector:
+   [CHEZ_PVEC_BASE + pvec_type, c_pointer_as_fixnum].
+   This makes it a proper Lisp_Object that chez_pseudovectorp recognizes.  */
+INLINE Lisp_Object
+chez_wrap_c_pseudovector (void *ptr_val)
+{
+  /* Check wrapper cache first — avoid duplicate wrappers.  */
+  chez_ptr cached = chez_lookup_wrapper (ptr_val);
+  if (cached)
+    return cached;
+
+  union vectorlike_header *h = (union vectorlike_header *) ptr_val;
+  int pvec_type = (h->size & PSEUDOVECTOR_FLAG)
+    ? (int) ((h->size & PVEC_TYPE_MASK) >> PSEUDOVECTOR_AREA_BITS)
+    : -1;
+  int tag = (pvec_type >= 0)
+    ? (CHEZ_PVEC_BASE + pvec_type)
+    : CHEZ_VECTORLIKE_TAG;
+  chez_ptr wrapper = chez_Smake_vector (2, Sfalse);
+  Svector_set (wrapper, 0, Sfixnum (tag));
+  Svector_set (wrapper, 1, Sfixnum ((iptr) ptr_val));
+  /* Register so GC can lock its Lisp_Object fields.
+     Pass the wrapper for guardian-based liveness tracking.  */
+  chez_register_pseudovector (ptr_val, wrapper);
+  chez_cache_wrapper (ptr_val, wrapper);
+  return wrapper;
+}
+#endif /* HAVE_CHEZ — pseudovector section */
+
+#ifdef HAVE_CHEZ
+/* Override make_lisp_ptr for Lisp_Vectorlike: C-allocated pseudovector
+   pointers must be wrapped in Chez vectors for type predicates and GC
+   to work.  Other types (cons, string, etc.) are Chez-native objects
+   and the raw cast is fine.  */
+INLINE Lisp_Object
+chez_make_lisp_ptr (void *ptr_val, enum Lisp_Type type)
+{
+  if (type == Lisp_Vectorlike)
+    return chez_wrap_c_pseudovector (ptr_val);
+  return (Lisp_Object) ptr_val;
+}
+#define make_lisp_ptr chez_make_lisp_ptr
+#endif
 
 /* A boolvector is a kind of vectorlike, with contents like a string.  */
 
@@ -1903,21 +2187,42 @@ INLINE struct Lisp_Bool_Vector *
 XBOOL_VECTOR (Lisp_Object a)
 {
   eassert (BOOL_VECTOR_P (a));
+#ifdef HAVE_CHEZ
+  /* Not a real struct pointer in Chez mode.  Use bool_vector_size()
+     and bool_vector_data() instead.  */
+  abort ();
+  return NULL;
+#else
   return XUNTAG (a, Lisp_Vectorlike, struct Lisp_Bool_Vector);
+#endif
 }
 
 INLINE EMACS_INT
 bool_vector_size (Lisp_Object a)
 {
+#ifdef HAVE_CHEZ
+  /* Chez bool vector: slot 1 = nbits (fixnum).  */
+  eassert (BOOL_VECTOR_P (a));
+  EMACS_INT size = Sfixnum_value (Svector_ref (a, 1));
+  eassume (0 <= size);
+  return size;
+#else
   EMACS_INT size = XBOOL_VECTOR (a)->size;
   eassume (0 <= size);
   return size;
+#endif
 }
 
 INLINE bits_word *
 bool_vector_data (Lisp_Object a)
 {
+#ifdef HAVE_CHEZ
+  /* Chez bool vector: slot 2 = bytevector holding bit data.  */
+  eassert (BOOL_VECTOR_P (a));
+  return (bits_word *) Sbytevector_data (Svector_ref (a, 2));
+#else
   return XBOOL_VECTOR (a)->data;
+#endif
 }
 
 INLINE unsigned char *
@@ -1959,7 +2264,12 @@ bool_vector_set (Lisp_Object a, EMACS_INT i, bool b)
     *addr &= ~ (1 << (i % BOOL_VECTOR_BITS_PER_CHAR));
 }
 
+#ifndef HAVE_CHEZ
 /* Conveniences for dealing with Lisp arrays.  */
+
+/* Pointer to the Lisp element array of a vector (non-Chez mode).
+   In Chez mode, this is defined in lisp_chez.h.  */
+#define XVECTOR_CONTENTS(v) (XVECTOR (v)->contents)
 
 INLINE Lisp_Object
 AREF (Lisp_Object array, ptrdiff_t idx)
@@ -1990,7 +2300,23 @@ gc_aset (Lisp_Object array, ptrdiff_t idx, Lisp_Object val)
   eassert (0 <= idx && idx < gc_asize (array));
   XVECTOR (array)->contents[idx] = val;
 }
+#else /* HAVE_CHEZ */
+INLINE Lisp_Object *
+aref_addr (Lisp_Object array, ptrdiff_t idx)
+{
+  (void) array; (void) idx;
+  abort ();  /* cannot take address of Chez vector slot */
+  return NULL;
+}
 
+INLINE void
+gc_aset (Lisp_Object array, ptrdiff_t idx, Lisp_Object val)
+{
+  ASET (array, idx, val);
+}
+#endif /* HAVE_CHEZ — array section */
+
+#ifndef HAVE_CHEZ
 /* True, since Qnil's representation is zero.  Every place in the code
    that assumes Qnil is zero should static_assert (NIL_IS_ZERO), to make
    it easy to find such assumptions later if we change Qnil to be
@@ -1998,6 +2324,10 @@ gc_aset (Lisp_Object array, ptrdiff_t idx, Lisp_Object val)
    the latter is not suitable for use in an integer constant
    expression.  */
 enum { NIL_IS_ZERO = iQnil == 0 && Lisp_Symbol == 0 };
+#else
+/* In Chez mode, Qnil is Snil (not zero).  */
+enum { NIL_IS_ZERO = 0 };
+#endif
 
 /* Clear the object addressed by P, with size NBYTES, so that all its
    bytes are zero and all its Lisp values are nil.  */
@@ -2005,9 +2335,20 @@ INLINE void
 memclear (void *p, ptrdiff_t nbytes)
 {
   eassert (0 <= nbytes);
+#ifndef HAVE_CHEZ
   static_assert (NIL_IS_ZERO);
   /* Since Qnil is zero, memset suffices.  */
   memset (p, 0, nbytes);
+#else
+  /* In Chez mode, Snil is 0x26, not 0.  Fill each Lisp_Object-sized
+     slot with Snil so that uninitialized fields are nil, not garbage.  */
+  {
+    Lisp_Object *lp = (Lisp_Object *) p;
+    ptrdiff_t nslots = nbytes / (ptrdiff_t) sizeof (Lisp_Object);
+    for (ptrdiff_t i = 0; i < nslots; i++)
+      lp[i] = Snil;
+  }
+#endif
 }
 
 /* If a struct is made to look like a vector, this macro returns the length
@@ -2092,7 +2433,15 @@ INLINE struct Lisp_Char_Table *
 XCHAR_TABLE (Lisp_Object a)
 {
   eassert (CHAR_TABLE_P (a));
+#ifdef HAVE_CHEZ
+  /* In Chez mode, char tables are pure Chez vectors.  This is a
+     type-only cast — never dereference struct fields through this
+     pointer (use CT_* macros instead).  The pointer can be safely
+     cast back to Lisp_Object since the value is unchanged.  */
+  return (struct Lisp_Char_Table *) (void *) a;
+#else
   return XUNTAG (a, Lisp_Vectorlike, struct Lisp_Char_Table);
+#endif
 }
 
 struct Lisp_Sub_Char_Table
@@ -2126,21 +2475,77 @@ INLINE struct Lisp_Sub_Char_Table *
 XSUB_CHAR_TABLE (Lisp_Object a)
 {
   eassert (SUB_CHAR_TABLE_P (a));
+#ifdef HAVE_CHEZ
+  /* In Chez mode, sub char tables are Chez vectors but the struct
+     overlay doesn't work because int depth (4B) + int min_char (4B)
+     don't match Chez fixnum slots.  This function should not be called
+     directly in Chez mode — use SCT_DEPTH, SCT_MIN_CHAR,
+     SCT_CONTENTS, SCT_SET_CONTENTS macros instead.  */
+  abort ();
+  return NULL;
+#else
   return XUNTAG (a, Lisp_Vectorlike, struct Lisp_Sub_Char_Table);
+#endif
 }
+
+#ifdef HAVE_CHEZ
+/* Chez-mode sub char table accessors.
+   Layout: slot 0=tag, 1=depth(fixnum), 2=min_char(fixnum), 3+=contents.  */
+#define SCT_DEPTH(t)        ((int) Sfixnum_value (Svector_ref ((t), 1)))
+#define SCT_MIN_CHAR(t)     ((int) Sfixnum_value (Svector_ref ((t), 2)))
+#define SCT_CONTENTS(t, i)  Svector_ref ((t), (i) + 3)
+#define SCT_SET_CONTENTS(t, i, v) Svector_set ((t), (i) + 3, (v))
+#else
+#define SCT_DEPTH(t)        (XSUB_CHAR_TABLE (t)->depth)
+#define SCT_MIN_CHAR(t)     (XSUB_CHAR_TABLE (t)->min_char)
+#define SCT_CONTENTS(t, i)  (XSUB_CHAR_TABLE (t)->contents[i])
+#define SCT_SET_CONTENTS(t, i, v) (XSUB_CHAR_TABLE (t)->contents[i] = (v))
+#endif
+
+/* Char-table field read accessors.
+   In Chez mode, char-tables are pure Chez vectors (created by
+   make_vector → chez_Smake_vector), NOT C-allocated pseudovectors.
+   The struct overlay via XCHAR_TABLE(ct)->field produces misaligned
+   reads because Chez vector slot offsets don't match struct field
+   offsets (Chez tagged pointers have a 7-bit tag that shifts all
+   addresses).  Use these macros for all char-table field reads.
+
+   Chez vector slot layout:
+     0: tag (CHEZ_PVEC_BASE + PVEC_CHAR_TABLE)
+     1: defalt
+     2: parent
+     3: purpose
+     4: ascii
+     5-68: contents[0..63]
+     69+: extras[0..]  */
+#ifdef HAVE_CHEZ
+#define CT_DEFALT(ct)       Svector_ref ((ct), 1)
+#define CT_PARENT(ct)       Svector_ref ((ct), 2)
+#define CT_PURPOSE(ct)      Svector_ref ((ct), 3)
+#define CT_ASCII(ct)        Svector_ref ((ct), 4)
+#define CT_CONTENTS(ct, i)  Svector_ref ((ct), 5 + (i))
+#define CT_EXTRAS(ct, i)    Svector_ref ((ct), 69 + (i))
+#else
+#define CT_DEFALT(ct)       (XCHAR_TABLE (ct)->defalt)
+#define CT_PARENT(ct)       (XCHAR_TABLE (ct)->parent)
+#define CT_PURPOSE(ct)      (XCHAR_TABLE (ct)->purpose)
+#define CT_ASCII(ct)        (XCHAR_TABLE (ct)->ascii)
+#define CT_CONTENTS(ct, i)  (XCHAR_TABLE (ct)->contents[i])
+#define CT_EXTRAS(ct, i)    (XCHAR_TABLE (ct)->extras[i])
+#endif
 
 INLINE Lisp_Object
 CHAR_TABLE_REF_ASCII (Lisp_Object ct, ptrdiff_t idx)
 {
-  for (struct Lisp_Char_Table *tbl = XCHAR_TABLE (ct); ;
-       tbl = XCHAR_TABLE (tbl->parent))
+  for (Lisp_Object tbl = ct; ; tbl = CT_PARENT (tbl))
     {
-      Lisp_Object val = (SUB_CHAR_TABLE_P (tbl->ascii)
-			 ? XSUB_CHAR_TABLE (tbl->ascii)->contents[idx]
-			 : tbl->ascii);
+      Lisp_Object ascii = CT_ASCII (tbl);
+      Lisp_Object val = (SUB_CHAR_TABLE_P (ascii)
+			 ? SCT_CONTENTS (ascii, idx)
+			 : ascii);
       if (NILP (val))
-	val = tbl->defalt;
-      if (!NILP (val) || NILP (tbl->parent))
+	val = CT_DEFALT (tbl);
+      if (!NILP (val) || NILP (CT_PARENT (tbl)))
 	return val;
     }
 }
@@ -2160,8 +2565,9 @@ CHAR_TABLE_REF (Lisp_Object ct, int idx)
 INLINE void
 CHAR_TABLE_SET (Lisp_Object ct, int idx, Lisp_Object val)
 {
-  if (ASCII_CHAR_P (idx) && SUB_CHAR_TABLE_P (XCHAR_TABLE (ct)->ascii))
-    set_sub_char_table_contents (XCHAR_TABLE (ct)->ascii, idx, val);
+  Lisp_Object ascii = CT_ASCII (ct);
+  if (ASCII_CHAR_P (idx) && SUB_CHAR_TABLE_P (ascii))
+    set_sub_char_table_contents (ascii, idx, val);
   else
     char_table_set (ct, idx, val);
 }
@@ -2213,6 +2619,7 @@ union Aligned_Lisp_Subr
   };
 static_assert (GCALIGNED (union Aligned_Lisp_Subr));
 
+#ifndef HAVE_CHEZ
 INLINE bool
 SUBRP (Lisp_Object a)
 {
@@ -2225,6 +2632,22 @@ XSUBR (Lisp_Object a)
   eassert (SUBRP (a));
   return &XUNTAG (a, Lisp_Vectorlike, union Aligned_Lisp_Subr)->s;
 }
+#else /* HAVE_CHEZ */
+INLINE bool
+SUBRP (Lisp_Object a)
+{
+  return chez_pseudovectorp (a, PVEC_SUBR);
+}
+
+INLINE struct Lisp_Subr *
+XSUBR (Lisp_Object a)
+{
+  /* In Chez mode, subrs are stored as Chez vectors with a pointer
+     to the static Lisp_Subr struct in slot 1.  */
+  eassert (SUBRP (a));
+  return (struct Lisp_Subr *) (intptr_t) Sfixnum_value (Svector_ref (a, 1));
+}
+#endif /* HAVE_CHEZ */
 
 /* Return whether a value might be a valid docstring.
    Used to distinguish the presence of non-docstring in the docstring slot,
@@ -2260,12 +2683,23 @@ static_assert (offsetof (struct Lisp_Sub_Char_Table, contents)
 
 /* Return the number of "extra" slots in the char table CT.  */
 
+#ifdef HAVE_CHEZ
+/* In Chez mode, ct is the tagged Chez vector pointer cast to struct*.
+   Cast back to Lisp_Object to use Svector_length.  */
+INLINE int
+CHAR_TABLE_EXTRA_SLOTS (struct Lisp_Char_Table *ct)
+{
+  Lisp_Object obj = (Lisp_Object) ct;
+  return (int)(Svector_length (obj) - 1) - CHAR_TABLE_STANDARD_SLOTS;
+}
+#else
 INLINE int
 CHAR_TABLE_EXTRA_SLOTS (struct Lisp_Char_Table *ct)
 {
   return ((ct->header.size & PSEUDOVECTOR_SIZE_MASK)
 	  - CHAR_TABLE_STANDARD_SLOTS);
 }
+#endif
 
 
 /* Save and restore the instruction and environment pointers,
@@ -2292,6 +2726,11 @@ typedef jmp_buf sys_jmp_buf;
 /***********************************************************************
 			       Symbols
  ***********************************************************************/
+
+#ifndef HAVE_CHEZ
+/* In Chez mode, symbol accessors are defined in lisp_chez.h using
+   Chez vector slot access.  In non-Chez mode, they operate on
+   struct Lisp_Symbol pointers.  */
 
 /* Value is name of symbol.  */
 
@@ -2353,6 +2792,24 @@ SYMBOL_NAME (Lisp_Object sym)
   return XSYMBOL (sym)->u.s.name;
 }
 
+INLINE Lisp_Object
+SYMBOL_FUNCTION (Lisp_Object sym)
+{
+  return XSYMBOL (sym)->u.s.function;
+}
+
+INLINE Lisp_Object
+SYMBOL_PLIST (Lisp_Object sym)
+{
+  return XSYMBOL (sym)->u.s.plist;
+}
+
+INLINE bool
+SYMBOL_DECLARED_SPECIAL_P (Lisp_Object sym)
+{
+  return XSYMBOL (sym)->u.s.declared_special;
+}
+
 /* Value is true if SYM is an interned symbol.  */
 
 INLINE bool
@@ -2389,6 +2846,116 @@ INLINE int
 {
   return lisp_h_SYMBOL_CONSTANT_P (sym);
 }
+#endif /* !HAVE_CHEZ */
+
+#ifdef HAVE_CHEZ
+/* In Chez mode, CHECK_* and SYMBOL_INTERNED_P are defined here
+   where CHECK_TYPE and Q-symbols are available.  */
+INLINE void
+CHECK_SYMBOL (Lisp_Object x)
+{
+  CHECK_TYPE (SYMBOLP (x), Qsymbolp, x);
+}
+
+INLINE void
+CHECK_CONS (Lisp_Object x)
+{
+  CHECK_TYPE (CONSP (x), Qconsp, x);
+}
+
+INLINE void
+CHECK_STRING (Lisp_Object x)
+{
+  CHECK_TYPE (STRINGP (x), Qstringp, x);
+}
+
+INLINE bool
+SYMBOL_INTERNED_P (Lisp_Object sym)
+{
+  eassert (SYMBOLP (sym));
+  return ((chez_sym_flags (sym) >> CHEZ_SYM_FLAG_INTERNED_SHIFT) & 3)
+         != SYMBOL_UNINTERNED;
+}
+
+INLINE bool
+SYMBOL_INTERNED_IN_INITIAL_OBARRAY_P (Lisp_Object sym)
+{
+  eassert (SYMBOLP (sym));
+  return ((chez_sym_flags (sym) >> CHEZ_SYM_FLAG_INTERNED_SHIFT) & 3)
+         == SYMBOL_INTERNED_IN_INITIAL_OBARRAY;
+}
+
+INLINE Lisp_Object
+CAR (Lisp_Object c)
+{
+  if (CONSP (c))
+    return XCAR (c);
+  if (!NILP (c))
+    wrong_type_argument (Qlistp, c);
+  return Qnil;
+}
+
+INLINE Lisp_Object
+CDR (Lisp_Object c)
+{
+  if (CONSP (c))
+    return XCDR (c);
+  if (!NILP (c))
+    wrong_type_argument (Qlistp, c);
+  return Qnil;
+}
+
+INLINE Lisp_Object
+CAR_SAFE (Lisp_Object c)
+{
+  return CONSP (c) ? XCAR (c) : Qnil;
+}
+
+INLINE Lisp_Object
+CDR_SAFE (Lisp_Object c)
+{
+  return CONSP (c) ? XCDR (c) : Qnil;
+}
+
+/* Symbol redirect accessors.  In Chez mode, symbols are Chez vectors
+   but buffer.c and data.c still use struct Lisp_Symbol * APIs.
+   These stubs let compilation pass; callers will be migrated later.  */
+INLINE struct Lisp_Symbol *
+SYMBOL_ALIAS (struct Lisp_Symbol *sym)
+{
+  return sym->u.s.val.alias;
+}
+
+INLINE struct Lisp_Buffer_Local_Value *
+SYMBOL_BLV (struct Lisp_Symbol *sym)
+{
+  return sym->u.s.val.blv;
+}
+
+INLINE lispfwd
+SYMBOL_FWD (struct Lisp_Symbol *sym)
+{
+  return sym->u.s.val.fwd;
+}
+
+INLINE void
+SET_SYMBOL_ALIAS (struct Lisp_Symbol *sym, struct Lisp_Symbol *v)
+{
+  sym->u.s.val.alias = v;
+}
+
+INLINE void
+SET_SYMBOL_BLV (struct Lisp_Symbol *sym, struct Lisp_Buffer_Local_Value *v)
+{
+  sym->u.s.val.blv = v;
+}
+
+INLINE void
+SET_SYMBOL_FWD (struct Lisp_Symbol *sym, lispfwd fwd)
+{
+  sym->u.s.val.fwd = fwd;
+}
+#endif /* HAVE_CHEZ */
 
 /* Placeholder for make-docfile to process.  The actual symbol
    definition is done by lread.c's define_symbol.  */
@@ -2431,7 +2998,11 @@ INLINE Lisp_Object
 make_lisp_obarray (struct Lisp_Obarray *o)
 {
   eassert (PSEUDOVECTOR_TYPEP (&o->header, PVEC_OBARRAY));
+#ifdef HAVE_CHEZ
+  return chez_wrap_c_pseudovector (o);
+#else
   return make_lisp_ptr (o, Lisp_Vectorlike);
+#endif
 }
 
 INLINE ptrdiff_t
@@ -2454,14 +3025,22 @@ check_obarray (Lisp_Object obarray)
 typedef struct {
   struct Lisp_Obarray *o;
   ptrdiff_t idx;		/* Current bucket index.  */
+#ifdef HAVE_CHEZ
+  Lisp_Object symbol;		/* Current symbol, or Sfalse if at end.  */
+#else
   struct Lisp_Symbol *symbol;	/* Current symbol, or NULL if at end
 				   of current bucket.  */
+#endif
 } obarray_iter_t;
 
 INLINE obarray_iter_t
 make_obarray_iter (struct Lisp_Obarray *oa)
 {
+#ifdef HAVE_CHEZ
+  return (obarray_iter_t){.o = oa, .idx = -1, .symbol = Sfalse};
+#else
   return (obarray_iter_t){.o = oa, .idx = -1, .symbol = NULL};
+#endif
 }
 
 /* Whether IT has reached the end and there are no more symbols.
@@ -2469,6 +3048,21 @@ make_obarray_iter (struct Lisp_Obarray *oa)
 INLINE bool
 obarray_iter_at_end (obarray_iter_t *it)
 {
+#ifdef HAVE_CHEZ
+  if (SYMBOLP (it->symbol))
+    return false;
+  ptrdiff_t size = obarray_size (it->o);
+  while (++it->idx < size)
+    {
+      Lisp_Object obj = it->o->buckets[it->idx];
+      if (!BASE_EQ (obj, make_fixnum (0)))
+	{
+	  it->symbol = obj;
+	  return false;
+	}
+    }
+  return true;
+#else
   if (it->symbol)
     return false;
   ptrdiff_t size = obarray_size (it->o);
@@ -2482,20 +3076,30 @@ obarray_iter_at_end (obarray_iter_t *it)
 	}
     }
   return true;
+#endif
 }
 
 /* Advance IT to the next symbol if any.  */
 INLINE void
 obarray_iter_step (obarray_iter_t *it)
 {
+#ifdef HAVE_CHEZ
+  Lisp_Object next = Svector_ref (it->symbol, CHEZ_SYM_SLOT_NEXT);
+  it->symbol = SYMBOLP (next) ? next : Sfalse;
+#else
   it->symbol = it->symbol->u.s.next;
+#endif
 }
 
 /* The Lisp symbol at IT, if obarray_iter_at_end returned false.  */
 INLINE Lisp_Object
 obarray_iter_symbol (obarray_iter_t *it)
 {
+#ifdef HAVE_CHEZ
+  return it->symbol;
+#else
   return make_lisp_symbol (it->symbol);
+#endif
 }
 
 /* Iterate IT over the symbols of the obarray OA.
@@ -2608,6 +3212,15 @@ struct Lisp_Hash_Table
      This vector is 2 * table_size entries long.  */
   Lisp_Object *key_and_value;
 
+#ifdef HAVE_CHEZ
+  /* In Chez mode, key_and_value is backed by a locked Chez vector so
+     the GC can trace and update moved references.  key_and_value
+     points into the vector's data area (valid because the vector is
+     pinned via Slock_object).  Writes MUST go through Svector_set to
+     maintain the write barrier.  */
+  chez_ptr kv_chez;
+#endif
+
   /* The comparison and hash functions.  */
   const struct hash_table_test *test;
 
@@ -2677,7 +3290,11 @@ INLINE Lisp_Object
 make_lisp_hash_table (struct Lisp_Hash_Table *h)
 {
   eassert (PSEUDOVECTOR_TYPEP (&h->header, PVEC_HASH_TABLE));
+#ifdef HAVE_CHEZ
+  return chez_wrap_c_pseudovector (h);
+#else
   return make_lisp_ptr (h, Lisp_Vectorlike);
+#endif
 }
 
 /* Value is the key part of entry IDX in hash table H.  */
@@ -3024,6 +3641,7 @@ XSQLITE (Lisp_Object a)
   return XUNTAG (a, Lisp_Vectorlike, struct Lisp_Sqlite);
 }
 
+#ifndef HAVE_CHEZ
 INLINE bool
 BIGNUMP (Lisp_Object x)
 {
@@ -3035,6 +3653,7 @@ INTEGERP (Lisp_Object x)
 {
   return FIXNUMP (x) || BIGNUMP (x);
 }
+#endif /* !HAVE_CHEZ */
 
 /* Return a Lisp integer with value taken from N.  */
 INLINE Lisp_Object
@@ -3158,6 +3777,7 @@ KBOARD_OBJFWDP (lispfwd a)
 }
 
 
+#ifndef HAVE_CHEZ
 /* Lisp floating point type.  */
 struct Lisp_Float
   {
@@ -3188,6 +3808,7 @@ XFLOAT_DATA (Lisp_Object f)
 {
   return XFLOAT (f)->u.data;
 }
+#endif /* !HAVE_CHEZ — float section */
 
 /* Most hosts nowadays use IEEE floating point, so they use IEC 60559
    representations, have infinities and NaNs, and do not trap on
@@ -3246,8 +3867,12 @@ INLINE EMACS_INT
 XFIXNAT (Lisp_Object a)
 {
   eassert (FIXNUMP (a));
+#ifdef HAVE_CHEZ
+  EMACS_INT result = XFIXNUM (a);
+#else
   EMACS_INT int0 = Lisp_Int0;
   EMACS_INT result = USE_LSB_TAG ? XFIXNUM (a) : XLI (a) - (int0 << VALBITS);
+#endif
   eassume (0 <= result);
   return result;
 }
@@ -3337,7 +3962,7 @@ CHECK_LIST_END (Lisp_Object x, Lisp_Object y)
 INLINE void
 (CHECK_FIXNUM) (Lisp_Object x)
 {
-  lisp_h_CHECK_FIXNUM (x);
+  CHECK_TYPE (FIXNUMP (x), Qfixnump, x);
 }
 
 INLINE void
@@ -3429,6 +4054,7 @@ CHECK_SUBR (Lisp_Object x)
     A null string means call interactively with no arguments.
  `doc' is documentation for the user.  */
 
+#ifndef HAVE_CHEZ
 /* This version of DEFUN declares a function prototype with the right
    arguments, so we can catch errors with maxargs at compile-time.  */
 #define DEFUN(lname, fnname, sname, minargs, maxargs, intspec, doc) \
@@ -3438,6 +4064,18 @@ CHECK_SUBR (Lisp_Object x)
        { .a ## maxargs = fnname },				    \
        minargs, maxargs, lname, {intspec}, lisp_h_Qnil}};	    \
    Lisp_Object fnname
+#else /* HAVE_CHEZ */
+/* In Chez mode, DEFUN creates a static Lisp_Subr (same struct) but
+   with a Chez-compatible header.  The struct is wrapped in a Chez vector
+   at runtime by defsubr().  */
+#define DEFUN(lname, fnname, sname, minargs, maxargs, intspec, doc) \
+  SUBR_SECTION_ATTRIBUTE                                            \
+  static union Aligned_Lisp_Subr sname =                            \
+     {{{ PVEC_SUBR << PSEUDOVECTOR_AREA_BITS },                     \
+       { .a ## maxargs = fnname },                                  \
+       minargs, maxargs, lname, {intspec}, 0}};                     \
+   Lisp_Object fnname
+#endif /* HAVE_CHEZ */
 
 /* defsubr (Sname);
    is how we define the symbol for function `name' at start-up time.  */
@@ -3975,19 +4613,116 @@ INLINE void
 set_hash_key_slot (struct Lisp_Hash_Table *h, ptrdiff_t idx, Lisp_Object val)
 {
   eassert (idx >= 0 && idx < h->table_size);
-  h->key_and_value[2 * idx] = val;
+#ifdef HAVE_CHEZ
+  if (h->kv_chez)
+    Svector_set (h->kv_chez, 2 * idx, val);
+  else
+#endif
+    h->key_and_value[2 * idx] = val;
 }
 
 INLINE void
 set_hash_value_slot (struct Lisp_Hash_Table *h, ptrdiff_t idx, Lisp_Object val)
 {
   eassert (idx >= 0 && idx < h->table_size);
-  h->key_and_value[2 * idx + 1] = val;;
+#ifdef HAVE_CHEZ
+  if (h->kv_chez)
+    Svector_set (h->kv_chez, 2 * idx + 1, val);
+  else
+#endif
+    h->key_and_value[2 * idx + 1] = val;
 }
 
 /* Use these functions to set Lisp_Object
    or pointer slots of struct Lisp_Symbol.  */
 
+#ifdef HAVE_CHEZ
+INLINE void
+set_symbol_function (Lisp_Object sym, Lisp_Object function)
+{
+  SET_SYMBOL_FUNCTION (sym, function);
+}
+
+INLINE void
+set_symbol_plist (Lisp_Object sym, Lisp_Object plist)
+{
+  SET_SYMBOL_PLIST (sym, plist);
+}
+
+INLINE void
+set_symbol_next (Lisp_Object sym, struct Lisp_Symbol *next)
+{
+  /* In Chez mode, next is stored as slot 5 of the symbol vector.  */
+  (void) next;
+  Svector_set (chez_resolve_symbol (sym), CHEZ_SYM_SLOT_NEXT, Sfalse);
+}
+
+INLINE void
+make_symbol_constant (Lisp_Object sym)
+{
+  /* Set trapped_write to SYMBOL_NOWRITE in the tag flags.  */
+  chez_ptr s = chez_resolve_symbol (sym);
+  iptr flags = Sfixnum_value (Svector_ref (s, CHEZ_SYM_SLOT_TAG));
+  flags &= ~(3 << CHEZ_SYM_FLAG_TRAPPED_SHIFT);
+  flags |= (SYMBOL_NOWRITE << CHEZ_SYM_FLAG_TRAPPED_SHIFT);
+  Svector_set (s, CHEZ_SYM_SLOT_TAG, Sfixnum (flags));
+}
+
+/* Flag setters for Chez-mode symbols.  */
+INLINE void
+chez_set_symbol_redirect (Lisp_Object sym, enum symbol_redirect r)
+{
+  chez_ptr s = chez_resolve_symbol (sym);
+  iptr flags = Sfixnum_value (Svector_ref (s, CHEZ_SYM_SLOT_TAG));
+  flags &= ~(7 << CHEZ_SYM_FLAG_REDIRECT_SHIFT);
+  flags |= (r << CHEZ_SYM_FLAG_REDIRECT_SHIFT);
+  Svector_set (s, CHEZ_SYM_SLOT_TAG, Sfixnum (flags));
+}
+
+INLINE void
+chez_set_symbol_trapped_write (Lisp_Object sym, enum symbol_trapped_write t)
+{
+  chez_ptr s = chez_resolve_symbol (sym);
+  iptr flags = Sfixnum_value (Svector_ref (s, CHEZ_SYM_SLOT_TAG));
+  flags &= ~(3 << CHEZ_SYM_FLAG_TRAPPED_SHIFT);
+  flags |= (t << CHEZ_SYM_FLAG_TRAPPED_SHIFT);
+  Svector_set (s, CHEZ_SYM_SLOT_TAG, Sfixnum (flags));
+}
+
+INLINE bool
+chez_symbol_declared_special_p (Lisp_Object sym)
+{
+  return (chez_sym_flags (sym) & CHEZ_SYM_FLAG_SPECIAL_BIT) != 0;
+}
+
+INLINE bool
+SYMBOL_DECLARED_SPECIAL_P (Lisp_Object sym)
+{
+  return chez_symbol_declared_special_p (sym);
+}
+
+INLINE void
+chez_set_symbol_declared_special (Lisp_Object sym, bool val)
+{
+  chez_ptr s = chez_resolve_symbol (sym);
+  iptr flags = Sfixnum_value (Svector_ref (s, CHEZ_SYM_SLOT_TAG));
+  if (val)
+    flags |= CHEZ_SYM_FLAG_SPECIAL_BIT;
+  else
+    flags &= ~CHEZ_SYM_FLAG_SPECIAL_BIT;
+  Svector_set (s, CHEZ_SYM_SLOT_TAG, Sfixnum (flags));
+}
+
+INLINE void
+chez_set_symbol_interned (Lisp_Object sym, enum symbol_interned i)
+{
+  chez_ptr s = chez_resolve_symbol (sym);
+  iptr flags = Sfixnum_value (Svector_ref (s, CHEZ_SYM_SLOT_TAG));
+  flags &= ~(3 << CHEZ_SYM_FLAG_INTERNED_SHIFT);
+  flags |= (i << CHEZ_SYM_FLAG_INTERNED_SHIFT);
+  Svector_set (s, CHEZ_SYM_SLOT_TAG, Sfixnum (flags));
+}
+#else
 INLINE void
 set_symbol_function (Lisp_Object sym, Lisp_Object function)
 {
@@ -4011,6 +4746,7 @@ make_symbol_constant (Lisp_Object sym)
 {
   XSYMBOL (sym)->u.s.trapped_write = SYMBOL_NOWRITE;
 }
+#endif
 
 /* Buffer-local variable access functions.  */
 
@@ -4034,7 +4770,14 @@ set_overlay_plist (Lisp_Object overlay, Lisp_Object plist)
 INLINE INTERVAL
 string_intervals (Lisp_Object s)
 {
+#ifdef HAVE_CHEZ
+  Lisp_Object iv = Svector_ref (s, CHEZ_STR_SLOT_INTERVALS);
+  if (NILP (iv))
+    return NULL;
+  return (INTERVAL) (uintptr_t) Sfixnum_value (iv);
+#else
   return XSTRING (s)->u.s.intervals;
+#endif
 }
 
 /* Set text properties of S to I.  */
@@ -4042,7 +4785,12 @@ string_intervals (Lisp_Object s)
 INLINE void
 set_string_intervals (Lisp_Object s, INTERVAL i)
 {
+#ifdef HAVE_CHEZ
+  Svector_set (s, CHEZ_STR_SLOT_INTERVALS,
+               i ? Sfixnum ((iptr) (uintptr_t) i) : Snil);
+#else
   XSTRING (s)->u.s.intervals = i;
+#endif
 }
 
 /* Set a Lisp slot in TABLE to VAL.  Most code should use this instead
@@ -4051,12 +4799,21 @@ set_string_intervals (Lisp_Object s, INTERVAL i)
 INLINE void
 set_char_table_defalt (Lisp_Object table, Lisp_Object val)
 {
+#ifdef HAVE_CHEZ
+  /* Char-tables are pure Chez vectors; struct overlay is misaligned.  */
+  Svector_set (table, 1, val);
+#else
   XCHAR_TABLE (table)->defalt = val;
+#endif
 }
 INLINE void
 set_char_table_purpose (Lisp_Object table, Lisp_Object val)
 {
+#ifdef HAVE_CHEZ
+  Svector_set (table, 3, val);
+#else
   XCHAR_TABLE (table)->purpose = val;
+#endif
 }
 
 /* Set different slots in (sub)character tables.  */
@@ -4065,20 +4822,28 @@ INLINE void
 set_char_table_extras (Lisp_Object table, ptrdiff_t idx, Lisp_Object val)
 {
   eassert (0 <= idx && idx < CHAR_TABLE_EXTRA_SLOTS (XCHAR_TABLE (table)));
+#ifdef HAVE_CHEZ
+  Svector_set (table, 69 + idx, val);
+#else
   XCHAR_TABLE (table)->extras[idx] = val;
+#endif
 }
 
 INLINE void
 set_char_table_contents (Lisp_Object table, ptrdiff_t idx, Lisp_Object val)
 {
   eassert (0 <= idx && idx < (1 << CHARTAB_SIZE_BITS_0));
+#ifdef HAVE_CHEZ
+  Svector_set (table, 5 + idx, val);  /* slot 5+ = contents */
+#else
   XCHAR_TABLE (table)->contents[idx] = val;
+#endif
 }
 
 INLINE void
 set_sub_char_table_contents (Lisp_Object table, ptrdiff_t idx, Lisp_Object val)
 {
-  XSUB_CHAR_TABLE (table)->contents[idx] = val;
+  SCT_SET_CONTENTS (table, idx, val);
 }
 
 /* Defined in bignum.c.  This part of bignum.c's API does not require
@@ -4257,7 +5022,11 @@ ptrdiff_t hash_find_get_hash (struct Lisp_Hash_Table *h, Lisp_Object key,
 ptrdiff_t hash_put (struct Lisp_Hash_Table *, Lisp_Object, Lisp_Object,
 		    hash_hash_t);
 void hash_remove_from_table (struct Lisp_Hash_Table *, Lisp_Object);
+#ifdef HAVE_CHEZ
+extern struct hash_table_test hashtest_eq, hashtest_eql, hashtest_equal;
+#else
 extern struct hash_table_test const hashtest_eq, hashtest_eql, hashtest_equal;
+#endif
 extern void validate_subarray (Lisp_Object, Lisp_Object, Lisp_Object,
 			       ptrdiff_t, ptrdiff_t *, ptrdiff_t *);
 extern Lisp_Object substring_both (Lisp_Object, ptrdiff_t, ptrdiff_t,
@@ -4596,7 +5365,14 @@ extern struct Lisp_Vector *allocate_vector (ptrdiff_t)
 INLINE Lisp_Object
 make_uninit_vector (ptrdiff_t size)
 {
+#ifdef HAVE_CHEZ
+  /* Create a Chez vector with tag in slot 0, elements in slots 1..size.  */
+  chez_ptr v = chez_Smake_vector (size + 1, Sfalse);
+  Svector_set (v, 0, Sfixnum (CHEZ_VECTORLIKE_TAG));
+  return v;
+#else
   return make_lisp_ptr (allocate_vector (size), Lisp_Vectorlike);
+#endif
 }
 
 /* Like above, but special for sub char-tables.  */
@@ -4605,11 +5381,26 @@ INLINE Lisp_Object
 make_uninit_sub_char_table (int depth, int min_char)
 {
   int slots = SUB_CHAR_TABLE_OFFSET + chartab_size[depth];
+#ifdef HAVE_CHEZ
+  /* In Chez mode, depth and min_char each occupy a full slot (Sfixnum),
+     but SUB_CHAR_TABLE_OFFSET was computed from the C struct where they
+     pack into one 8-byte slot (two ints).  Add 1 for the extra slot.  */
+  slots += 1;
+#endif
   Lisp_Object v = make_uninit_vector (slots);
 
+#ifdef HAVE_CHEZ
+  /* In Chez mode, v is a Chez vector. Set tag to PVEC_SUB_CHAR_TABLE
+     and store depth/min_char in the first content slots.  */
+  Svector_set (v, 0, Sfixnum (CHEZ_PVEC_BASE + PVEC_SUB_CHAR_TABLE));
+  /* depth and min_char are stored as fixnums in the first slots.  */
+  Svector_set (v, 1, Sfixnum (depth));
+  Svector_set (v, 2, Sfixnum (min_char));
+#else
   XSETPVECTYPE (XVECTOR (v), PVEC_SUB_CHAR_TABLE);
   XSUB_CHAR_TABLE (v)->depth = depth;
   XSUB_CHAR_TABLE (v)->min_char = min_char;
+#endif
   return v;
 }
 
@@ -4619,7 +5410,13 @@ make_uninit_sub_char_table (int depth, int min_char)
 INLINE Lisp_Object
 make_nil_vector (ptrdiff_t size)
 {
+#ifdef HAVE_CHEZ
+  chez_ptr v = chez_Smake_vector (size + 1, Qnil);
+  Svector_set (v, 0, Sfixnum (CHEZ_VECTORLIKE_TAG));
+  return v;
+#else
   return make_lisp_ptr (allocate_nil_vector (size), Lisp_Vectorlike);
+#endif
 }
 
 extern struct Lisp_Vector *allocate_pseudovector (int, int, int,
@@ -5756,9 +6553,15 @@ enum { defined_GC_CHECK_STRING_BYTES = false };
 
 enum
   {
+#ifdef HAVE_CHEZ
+    /* Chez mode: all Lisp objects must be Chez-allocated, not stack.  */
+    USE_STACK_CONS = false,
+    USE_STACK_STRING = false,
+#else
     USE_STACK_CONS = USE_STACK_LISP_OBJECTS,
     USE_STACK_STRING = (USE_STACK_CONS
 			&& !defined_GC_CHECK_STRING_BYTES)
+#endif
   };
 
 /* Auxiliary macros used for auto allocation of Lisp objects.  Please
@@ -5901,11 +6704,28 @@ struct for_each_tail_internal
 
 /* Check whether it's time for GC, and run it if so.  */
 
+#ifdef HAVE_CHEZ
+extern int chez_gc_alloc_count;
+extern int chez_readevalloop_depth;
+extern void chez_gc_safe_point (void);
+extern void chez_gc_from_eval (void);
+#endif
+
 INLINE void
 maybe_gc (void)
 {
+#ifdef HAVE_CHEZ
+  /* In Chez mode, just count eval/funcall calls.  GC fires at:
+     1. readevalloop safe points (every 500 calls)
+     2. eval_sub / Ffuncall inline (every 5000 calls) — pins form first
+     Mode 2 handles long-running single forms where readevalloop
+     safe points are never reached.  */
+  if (specpdl)
+    chez_gc_alloc_count++;
+#else
   if (consing_until_gc < 0)
     maybe_garbage_collect ();
+#endif
 }
 
 INLINE_HEADER_END

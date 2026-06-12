@@ -1177,8 +1177,10 @@ top_level_2 (void)
      encountering an error, to help with debugging.  */
   bool setup_handler = noninteractive;
   if (setup_handler)
-    /* FIXME: Should we (re)use `list_of_error` from `xdisp.c`? */
-    push_handler_bind (list1 (Qerror), Qdebug_early__handler, 0);
+    {
+      /* FIXME: Should we (re)use `list_of_error` from `xdisp.c`? */
+      push_handler_bind (list1 (Qerror), Qdebug_early__handler, 0);
+    }
 
   Lisp_Object res = Feval (Vtop_level, Qt);
 
@@ -1365,6 +1367,12 @@ command_loop_1 (void)
 
       if (! FRAME_LIVE_P (XFRAME (selected_frame)))
 	Fkill_emacs (Qnil, Qnil);
+
+#ifdef HAVE_CHEZ
+      /* Safe point for Chez GC — top of command loop, C stack is
+	 shallow, safe for the copying GC to relocate objects.  */
+      chez_gc_safe_point ();
+#endif
 
       /* Make sure the current window's buffer is selected.  */
       set_buffer_internal (XBUFFER (XWINDOW (selected_window)->contents));
@@ -4745,7 +4753,7 @@ decode_timer (Lisp_Object timer)
 
   if (! (VECTORP (timer) && ASIZE (timer) == 10))
     return invalid_timespec ();
-  vec = XVECTOR (timer)->contents;
+  vec = XVECTOR_CONTENTS (timer);
   if (! NILP (vec[0]))
     return invalid_timespec ();
   if (! FIXNUMP (vec[2]))
@@ -9161,13 +9169,13 @@ parse_menu_item (Lisp_Object item, int inmenubar)
   }
 
   /* Include this when menu help is implemented.
-  tem = XVECTOR (item_properties)->contents[ITEM_PROPERTY_HELP];
+  tem = XVECTOR_CONTENTS (item_properties)[ITEM_PROPERTY_HELP];
   if (!(NILP (tem) || STRINGP (tem)))
     {
       tem = menu_item_eval_property (tem);
       if (!STRINGP (tem))
 	tem = Qnil;
-      XVECTOR (item_properties)->contents[ITEM_PROPERTY_HELP] = tem;
+      XVECTOR_CONTENTS (item_properties)[ITEM_PROPERTY_HELP] = tem;
     }
   */
 
@@ -9311,7 +9319,7 @@ process_tab_bar_item (Lisp_Object key, Lisp_Object def, Lisp_Object data, void *
 	 discard any previously made item.  */
       for (i = 0; i < ntab_bar_items; i += TAB_BAR_ITEM_NSLOTS)
 	{
-	  Lisp_Object *v = XVECTOR (tab_bar_items_vector)->contents + i;
+	  Lisp_Object *v = XVECTOR_CONTENTS (tab_bar_items_vector) + i;
 
 	  if (EQ (key, v[TAB_BAR_ITEM_KEY]))
 	    {
@@ -9695,7 +9703,7 @@ process_tool_bar_item (Lisp_Object key, Lisp_Object def, Lisp_Object data, void 
 	 discard any previously made item.  */
       for (i = 0; i < ntool_bar_items; i += TOOL_BAR_ITEM_NSLOTS)
 	{
-	  Lisp_Object *v = XVECTOR (tool_bar_items_vector)->contents + i;
+	  Lisp_Object *v = XVECTOR_CONTENTS (tool_bar_items_vector) + i;
 
 	  if (EQ (key, v[TOOL_BAR_ITEM_KEY]))
 	    {
@@ -10278,7 +10286,7 @@ read_char_minibuf_menu_prompt (int commandflag,
 #if 0  /* It is redundant to list the equivalent key bindings because
 	  the prefix is what the user has already typed.  */
 		  tem
-		    = XVECTOR (item_properties)->contents[ITEM_PROPERTY_KEYEQ];
+		    = XVECTOR_CONTENTS (item_properties)[ITEM_PROPERTY_KEYEQ];
 		  if (!NILP (tem))
 		    /* Insert equivalent keybinding.  */
 		    s = concat2 (s, tem);
@@ -11836,9 +11844,7 @@ read_key_sequence (Lisp_Object *keybuf, Lisp_Object prompt,
 	      && (modifiers & shift_modifier
 		  /* Treat uppercase keys as shifted.  */
 		  || (FIXNUMP (key)
-		      && (KEY_TO_CHAR (key)
-			  < XCHAR_TABLE (BVAR (current_buffer,
-					       downcase_table))->header.size)
+		      && (KEY_TO_CHAR (key) <= MAX_CHAR)
 		      && uppercasep (KEY_TO_CHAR (key)))))
 	    {
 	      Lisp_Object new_key
@@ -12232,7 +12238,7 @@ represented as pseudo-events of the form (nil . COMMAND).  */)
   if (!total_keys
       || (cmds && total_keys < lossage_limit))
     return Fvector (total_keys,
-		    XVECTOR (recent_keys)->contents);
+		    XVECTOR_CONTENTS (recent_keys));
   else
     {
       Lisp_Object es = Qnil;
@@ -12262,7 +12268,7 @@ See also `this-command-keys-vector'.  */)
   (void)
 {
   return make_event_array (this_command_key_count,
-			   XVECTOR (this_command_keys)->contents);
+			   XVECTOR_CONTENTS (this_command_keys));
 }
 
 DEFUN ("set--this-command-keys", Fset__this_command_keys,
@@ -12307,7 +12313,7 @@ See also `this-command-keys'.  */)
   (void)
 {
   return Fvector (this_command_key_count,
-		  XVECTOR (this_command_keys)->contents);
+		  XVECTOR_CONTENTS (this_command_keys));
 }
 
 DEFUN ("this-single-command-keys", Fthis_single_command_keys,
@@ -12320,7 +12326,7 @@ The value is always a vector.  */)
 {
   ptrdiff_t nkeys = this_command_key_count - this_single_command_key_start;
   return Fvector (nkeys < 0 ? 0 : nkeys,
-		  (XVECTOR (this_command_keys)->contents
+		  (XVECTOR_CONTENTS (this_command_keys)
 		   + this_single_command_key_start));
 }
 
@@ -12334,7 +12340,7 @@ shows the events before all translations (except for input methods).
 The value is always a vector.  */)
   (void)
 {
-  return Fvector (raw_keybuf_count, XVECTOR (raw_keybuf)->contents);
+  return Fvector (raw_keybuf_count, XVECTOR_CONTENTS (raw_keybuf));
 }
 
 DEFUN ("clear-this-command-keys", Fclear_this_command_keys,
@@ -13949,7 +13955,11 @@ for that character after that prefix key.  */);
 	       doc: /* Form to evaluate when Emacs starts up.
 Useful to set before you dump a modified Emacs.  */);
   Vtop_level = Qnil;
+#ifdef HAVE_CHEZ
+  chez_set_symbol_declared_special (Qtop_level, false);
+#else
   XSYMBOL (Qtop_level)->u.s.declared_special = false;
+#endif
 
   DEFVAR_KBOARD ("keyboard-translate-table", Vkeyboard_translate_table,
                  doc: /* Translate table for local keyboard input, or nil.

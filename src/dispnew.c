@@ -7421,7 +7421,9 @@ init_display (void)
         init_faces_initial ();
     }
   else
-    init_display_interactive ();
+    {
+      init_display_interactive ();
+    }
 }
 
 

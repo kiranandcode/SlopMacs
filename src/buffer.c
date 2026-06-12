@@ -1146,15 +1146,15 @@ reset_buffer_local_variables (struct buffer *b, int permanent_too)
 
   /* If the standard case table has been altered and invalidated,
      fix up its insides first.  */
-  if (! (CHAR_TABLE_P (XCHAR_TABLE (Vascii_downcase_table)->extras[0])
-	 && CHAR_TABLE_P (XCHAR_TABLE (Vascii_downcase_table)->extras[1])
-	 && CHAR_TABLE_P (XCHAR_TABLE (Vascii_downcase_table)->extras[2])))
+  if (! (CHAR_TABLE_P (CT_EXTRAS (Vascii_downcase_table, 0))
+	 && CHAR_TABLE_P (CT_EXTRAS (Vascii_downcase_table, 1))
+	 && CHAR_TABLE_P (CT_EXTRAS (Vascii_downcase_table, 2))))
     Fset_standard_case_table (Vascii_downcase_table);
 
   bset_downcase_table (b, Vascii_downcase_table);
-  bset_upcase_table (b, XCHAR_TABLE (Vascii_downcase_table)->extras[0]);
-  bset_case_canon_table (b, XCHAR_TABLE (Vascii_downcase_table)->extras[1]);
-  bset_case_eqv_table (b, XCHAR_TABLE (Vascii_downcase_table)->extras[2]);
+  bset_upcase_table (b, CT_EXTRAS (Vascii_downcase_table, 0));
+  bset_case_canon_table (b, CT_EXTRAS (Vascii_downcase_table, 1));
+  bset_case_eqv_table (b, CT_EXTRAS (Vascii_downcase_table, 2));
   bset_invisibility_spec (b, Qt);
 
   /* Reset all (or most) per-buffer variables to their defaults.  */
@@ -4195,7 +4195,7 @@ report_overlay_modification (Lisp_Object start, Lisp_Object end, bool after,
 
     USE_SAFE_ALLOCA;
     SAFE_ALLOCA_LISP (copy, size);
-    memcpy (copy, XVECTOR (last_overlay_modification_hooks)->contents,
+    memcpy (copy, XVECTOR_CONTENTS (last_overlay_modification_hooks),
 	    size * word_size);
 
     for (i = 0; i < size;)
@@ -4821,6 +4821,16 @@ init_buffer_once (void)
   /* Prevent GC from getting confused.  */
   buffer_defaults.text = &buffer_defaults.own_text;
   buffer_local_symbols.text = &buffer_local_symbols.own_text;
+
+#ifdef HAVE_CHEZ
+  /* Register for Chez GC root scanning.  These static structs hold
+     Lisp_Object fields (wrapper pointers) that the copying GC must
+     trace and update when objects move.  Without this, all buffers
+     that copy from buffer_defaults get stale pointers.  */
+  chez_register_static_roots (&buffer_defaults);
+  chez_register_static_roots (&buffer_local_symbols);
+  chez_register_static_roots (&buffer_local_flags);
+#endif
   /* No one will share the text with these buffers, but let's play it safe.  */
   buffer_defaults.indirections = 0;
   buffer_local_symbols.indirections = 0;
@@ -5009,12 +5019,21 @@ static void
 defvar_per_buffer (const struct Lisp_Fwd *fwd, const char *namestring)
 {
   eassert (fwd->type == Lisp_Fwd_Buffer_Obj);
-  struct Lisp_Symbol *sym = XSYMBOL (intern (namestring));
+  Lisp_Object sym_obj = intern (namestring);
 
+#ifdef HAVE_CHEZ
+  chez_set_symbol_declared_special (sym_obj, true);
+  chez_set_symbol_redirect (sym_obj, SYMBOL_FORWARDED);
+  /* Store forwarding pointer as fixnum in the value slot.  */
+  Svector_set (sym_obj, CHEZ_SYM_SLOT_VAL, Sfixnum ((iptr) fwd));
+  PER_BUFFER_SYMBOL (XBUFFER_OFFSET (fwd)) = sym_obj;
+#else
+  struct Lisp_Symbol *sym = XSYMBOL (sym_obj);
   sym->u.s.declared_special = true;
   sym->u.s.redirect = SYMBOL_FORWARDED;
   SET_SYMBOL_FWD (sym, fwd);
   XSETSYMBOL (PER_BUFFER_SYMBOL (XBUFFER_OFFSET (fwd)), sym);
+#endif
 
   if (PER_BUFFER_IDX (XBUFFER_OFFSET (fwd)) == 0)
     /* Did a DEFVAR_PER_BUFFER without initializing the corresponding

@@ -1018,7 +1018,9 @@ set_minibuffer_mode (Lisp_Object buf, EMACS_INT depth)
       if (!NILP (Ffboundp (Qminibuffer_inactive_mode)))
 	call0 (Qminibuffer_inactive_mode);
       else
-	Fkill_all_local_variables (Qnil);
+	{
+	  Fkill_all_local_variables (Qnil);
+	}
     }
   buf = unbind_to (count, buf);
 }
@@ -2259,7 +2261,6 @@ init_minibuf_once (void)
   staticpro (&Vminibuffer_list);
   staticpro (&Vcommand_loop_level_list);
   pdumper_do_now_and_after_load (init_minibuf_once_for_pdumper);
-  /* Ensure our inactive minibuffer exists.  */
   get_minibuffer (0);
 }
 

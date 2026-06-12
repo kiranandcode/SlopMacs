@@ -987,7 +987,7 @@ Currently, any char-table counts as a syntax table.  */)
   (Lisp_Object object)
 {
   if (CHAR_TABLE_P (object)
-      && EQ (XCHAR_TABLE (object)->purpose, Qsyntax_table))
+      && EQ (CT_PURPOSE (object), Qsyntax_table))
     return Qt;
   return Qnil;
 }
@@ -995,7 +995,7 @@ Currently, any char-table counts as a syntax table.  */)
 static void
 check_syntax_table (Lisp_Object obj)
 {
-  CHECK_TYPE (CHAR_TABLE_P (obj) && EQ (XCHAR_TABLE (obj)->purpose, Qsyntax_table),
+  CHECK_TYPE (CHAR_TABLE_P (obj) && EQ (CT_PURPOSE (obj), Qsyntax_table),
 	      Qsyntax_table_p, obj);
 }
 
@@ -1037,7 +1037,7 @@ It is a copy of the TABLE, which defaults to the standard syntax table.  */)
   /* Copied syntax tables should all have parents.
      If we copied one with no parent, such as the standard syntax table,
      use the standard syntax table as the copy's parent.  */
-  if (NILP (XCHAR_TABLE (copy)->parent))
+  if (NILP (CT_PARENT (copy)))
     Fset_char_table_parent (copy, Vstandard_syntax_table);
   return copy;
 }

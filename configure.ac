@@ -573,6 +573,11 @@ On by default on macOS.])],[],[with_ns=maybe])
 OPTION_DEFAULT_OFF([w32], [use native MS Windows GUI in a Cygwin build])
 OPTION_DEFAULT_OFF([pgtk], [use GTK to support window systems other than X])
 OPTION_DEFAULT_OFF([web], [use WebSocket/HTML5 Canvas display backend])
+OPTION_DEFAULT_OFF([chez], [use Chez Scheme runtime for types, GC, and threading])
+AC_ARG_WITH([chez-prefix],
+  [AS_HELP_STRING([--with-chez-prefix=DIR],
+    [root of Chez Scheme installation (default: $HOME/chez-install)])],
+  [], [with_chez_prefix="$HOME/chez-install"])
 
 OPTION_DEFAULT_ON([gpm],[don't use -lgpm for mouse support on a GNU/Linux console])
 OPTION_DEFAULT_IFAVAILABLE([dbus],[compile with D-Bus support])
@@ -1282,6 +1287,7 @@ packages targeting Android 2.2.])])
   passthrough="$passthrough --with-harfbuzz=$with_harfbuzz"
   passthrough="$passthrough --with-threads=$with_threads"
   passthrough="$passthrough --with-rsvg=$with_rsvg"
+  passthrough="$passthrough --with-chez=$with_chez"
 
   # Now pass through some checking-related options.
   emacs_val="--enable-check-lisp-object-type=$enable_check_lisp_object_type"
@@ -3174,6 +3180,7 @@ HAVE_X11=no
 USE_X_TOOLKIT=none
 HAVE_PGTK=no
 HAVE_WEB=no
+HAVE_CHEZ=no
 
 case "${window_system}" in
   x11 )
@@ -3229,6 +3236,74 @@ esac
 
 AC_SUBST([HAVE_PGTK])
 AC_SUBST([HAVE_WEB])
+AC_SUBST([HAVE_CHEZ])
+
+dnl Chez Scheme runtime detection
+CHEZ_CFLAGS=
+CHEZ_LIBS=
+CHEZ_BOOTDIR=
+CHEZ_OBJ=
+if test "${with_chez}" = "yes"; then
+  CHEZ_PREFIX="${with_chez_prefix}"
+  AC_MSG_CHECKING([for Chez Scheme at ${CHEZ_PREFIX}])
+  dnl Search for Chez in lib/csv*/MACHINE/ directories
+  CHEZ_FOUND=no
+  for csvdir in "${CHEZ_PREFIX}"/lib/csv*; do
+    if test -d "$csvdir"; then
+      for machdir in tarm64osx ta6osx ta6le ti3le tarm64le; do
+        if test -f "${csvdir}/${machdir}/scheme.h"; then
+          CHEZ_MACHINE="${machdir}"
+          CHEZ_LIBDIR="${csvdir}/${machdir}"
+          CHEZ_CFLAGS="-I${CHEZ_LIBDIR}"
+          CHEZ_LIBS="-L${CHEZ_LIBDIR} -lkernel -liconv -lm -lncurses -llz4 -lz"
+          CHEZ_BOOTDIR="${CHEZ_LIBDIR}"
+          HAVE_CHEZ=yes
+          CHEZ_FOUND=yes
+          break 2
+        fi
+      done
+    fi
+  done
+  if test "$CHEZ_FOUND" = yes; then
+    AC_MSG_RESULT([yes (${CHEZ_MACHINE})])
+  elif test -f "${CHEZ_PREFIX}/include/scheme.h" ; then
+    CHEZ_CFLAGS="-I${CHEZ_PREFIX}/include"
+    CHEZ_LIBS="-L${CHEZ_PREFIX}/lib -lchez -lpthread -lm -ldl -lncurses"
+    CHEZ_BOOTDIR="${CHEZ_PREFIX}/lib"
+    HAVE_CHEZ=yes
+    AC_MSG_RESULT([yes])
+  else
+    AC_MSG_RESULT([no])
+    AC_MSG_ERROR([Chez Scheme not found at ${CHEZ_PREFIX}. Build with --threads and install, or use --with-chez-prefix=DIR])
+  fi
+  if test "$HAVE_CHEZ" = yes; then
+    AC_DEFINE([HAVE_CHEZ], [1], [Define to 1 if using Chez Scheme runtime.])
+    AC_DEFINE_UNQUOTED([CHEZ_BOOTDIR], ["${CHEZ_BOOTDIR}"], [Directory containing Chez boot files.])
+    CHEZ_OBJ="chez.o chez_bridge.o"
+    dnl In Chez mode, pdumper and native comp are replaced/incompatible.
+    PDUMPER_OBJ=""
+    COMP_OBJ=""
+    HAVE_PDUMPER=no
+    HAVE_NATIVE_COMP=no
+    dnl Undo the earlier AC_DEFINE of HAVE_PDUMPER.
+    AC_DEFINE([HAVE_PDUMPER], [0])
+    dnl No dumping in Chez mode — Chez boot files replace pdumper.
+    DUMPING=none
+  fi
+fi
+dnl Default: include pdumper and comp when not using Chez.
+if test -z "$PDUMPER_OBJ" && test "$HAVE_CHEZ" != "yes"; then
+  PDUMPER_OBJ="pdumper.o"
+fi
+if test -z "$COMP_OBJ" && test "$HAVE_CHEZ" != "yes"; then
+  COMP_OBJ="comp.o"
+fi
+AC_SUBST([PDUMPER_OBJ])
+AC_SUBST([COMP_OBJ])
+AC_SUBST([CHEZ_CFLAGS])
+AC_SUBST([CHEZ_LIBS])
+AC_SUBST([CHEZ_BOOTDIR])
+AC_SUBST([CHEZ_OBJ])
 
 if test "$window_system" = none && test "X$with_x" != "Xno"; then
    AC_CHECK_PROG([HAVE_XSERVER], [X], [true], [false])
@@ -7654,7 +7729,7 @@ Configured for '${canonical}'.
 #### Please respect alphabetical ordering when making additions.
 optsep=
 emacs_config_features=
-for opt in ACL BE_APP CAIRO DBUS FREETYPE GCONF GIF GLIB GMP GNUTLS GPM GSETTINGS \
+for opt in ACL BE_APP CAIRO CHEZ DBUS FREETYPE GCONF GIF GLIB GMP GNUTLS GPM GSETTINGS \
  HARFBUZZ IMAGEMAGICK JPEG LCMS2 LIBOTF LIBSELINUX LIBSYSTEMD LIBXML2 \
  M17N_FLT MODULES NATIVE_COMP NOTIFY NS OLDXMENU PDUMPER PGTK PNG RSVG SECCOMP \
  SOUND SQLITE3 THREADS TIFF TOOLKIT_SCROLL_BARS TREE_SITTER \
@@ -7718,6 +7793,7 @@ AS_ECHO(["  Does Emacs use -lXaw3d?                                 ${HAVE_XAW3D
   Does Emacs support sound?                               ${HAVE_SOUND}
   Does Emacs use -lgpm?                                   ${HAVE_GPM}
   Does Emacs use -ldbus?                                  ${HAVE_DBUS}
+  Does Emacs use Chez Scheme runtime?                     ${HAVE_CHEZ}
   Does Emacs use -lgconf?                                 ${HAVE_GCONF}
   Does Emacs use GSettings?                               ${HAVE_GSETTINGS}
   Does Emacs use a file notification library?             ${NOTIFY_SUMMARY}

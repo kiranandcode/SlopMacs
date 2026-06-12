@@ -236,6 +236,14 @@ static struct saved_string saved_strings[2];
 
 static Lisp_Object Vloads_in_progress;
 
+#ifdef HAVE_CHEZ
+static void
+chez_readevalloop_depth_dec (void)
+{
+  chez_readevalloop_depth--;
+}
+#endif
+
 static void readevalloop (Lisp_Object, struct infile *, Lisp_Object, bool,
                           Lisp_Object,
                           Lisp_Object, Lisp_Object);
@@ -1014,6 +1022,7 @@ close_infile_unwind (void *arg)
 static Lisp_Object
 compute_found_effective (Lisp_Object found)
 {
+#ifdef HAVE_NATIVE_COMP
   /* Reconstruct the .elc filename.  */
   Lisp_Object src_name =
     Fgethash (Ffile_name_nondirectory (found), Vcomp_eln_to_el_h, Qnil);
@@ -1025,6 +1034,9 @@ compute_found_effective (Lisp_Object found)
   if (suffix_p (src_name, "el.gz"))
     src_name = Fsubstring (src_name, make_fixnum (0), make_fixnum (-3));
   return concat2 (src_name, build_string ("c"));
+#else
+  return found;
+#endif
 }
 
 static void
@@ -2139,16 +2151,49 @@ readevalloop_eager_expand_eval (Lisp_Object val, Lisp_Object macroexpand)
      form in the progn as a top-level form.  This way, if one form in
      the progn defines a macro, that macro is in effect when we expand
      the remaining forms.  See similar code in bytecomp.el.  */
+
+#ifdef HAVE_CHEZ
+  static int expand_depth = 0;
+  expand_depth++;
+  if (expand_depth > 50)
+    {
+      static bool warned = false;
+      if (!warned)
+	{
+	  fprintf (stderr, "  [WARNING: macroexpand depth %d!]\n", expand_depth);
+	  warned = true;
+	}
+    }
+#endif
+
   val = calln (macroexpand, val, Qnil);
+
   if (EQ (CAR_SAFE (val), Qprogn))
     {
       Lisp_Object subforms = XCDR (val);
       val = Qnil;
+#ifdef HAVE_CHEZ
+      while (CONSP (subforms))
+	{
+	  Lisp_Object form = XCAR (subforms);
+	  subforms = XCDR (subforms);
+	  chez_gc_pin (subforms);
+	  val = readevalloop_eager_expand_eval (form, macroexpand);
+	  chez_gc_unpin (subforms);
+	}
+#else
       FOR_EACH_TAIL (subforms)
 	val = readevalloop_eager_expand_eval (XCAR (subforms), macroexpand);
+#endif
     }
   else
+    {
       val = eval_sub (calln (macroexpand, val, Qt));
+    }
+
+#ifdef HAVE_CHEZ
+  expand_depth--;
+#endif
   return val;
 }
 
@@ -2176,6 +2221,14 @@ readevalloop (Lisp_Object readcharfun,
   /* True on the first time around.  */
   bool first_sexp = 1;
   Lisp_Object macroexpand;
+
+#ifdef HAVE_CHEZ
+  chez_readevalloop_depth++;
+  record_unwind_protect_void (chez_readevalloop_depth_dec);
+  /* Lock sourcename so it survives GC at safe points — it's used
+     after the main loop in build_load_history.  */
+  chez_gc_pin (sourcename);
+#endif
 
   if (!NILP (sourcename))
     CHECK_STRING (sourcename);
@@ -2334,10 +2387,52 @@ readevalloop (Lisp_Object readcharfun,
       unbind_to (count1, Qnil);
 
       /* Now eval what we just read.  */
+#ifdef HAVE_CHEZ
+      {
+	static int form_count = 0;
+	struct timespec t0, t1;
+	form_count++;
+
+	/* Print form head BEFORE eval so we know what's being evaluated
+	   when the process hangs.  */
+	{
+	  const char *fn = "";
+	  if (Vload_file_name && STRINGP (Vload_file_name))
+	    {
+	      fn = SSDATA (Vload_file_name);
+	      const char *bn = strrchr (fn, '/');
+	      if (bn) fn = bn + 1;
+	    }
+	  /* Print form head (car) for cons forms.  */
+	  if (CONSP (val))
+	    {
+	      Lisp_Object head = XCAR (val);
+	      if (SYMBOLP (head) && STRINGP (SYMBOL_NAME (head)))
+		fprintf (stderr, "  [form#%d (%s ...) %s]\n",
+			 form_count, SSDATA (SYMBOL_NAME (head)), fn);
+	      else
+		fprintf (stderr, "  [form#%d (? ...) %s]\n", form_count, fn);
+	    }
+	  else if (form_count % 100 == 0)
+	    fprintf (stderr, "  [form#%d atom %s]\n", form_count, fn);
+	}
+
+	clock_gettime (CLOCK_MONOTONIC, &t0);
+#endif
+
       if (!NILP (macroexpand))
         val = readevalloop_eager_expand_eval (val, macroexpand);
       else
         val = eval_sub (val);
+
+#ifdef HAVE_CHEZ
+	clock_gettime (CLOCK_MONOTONIC, &t1);
+	long ms = (t1.tv_sec - t0.tv_sec) * 1000
+	  + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+	if (ms > 100)
+	  fprintf (stderr, "    ^ took %ldms\n", ms);
+      }
+#endif
 
       if (printflag)
 	{
@@ -2348,12 +2443,21 @@ readevalloop (Lisp_Object readcharfun,
 	    Fprint (val, Qnil);
 	}
 
+#ifdef HAVE_CHEZ
+      /* Safe point for Chez GC — C stack is shallow here (between
+	 top-level forms), so the copying GC won't invalidate locals.  */
+      chez_gc_safe_point ();
+#endif
+
       first_sexp = 0;
     }
 
   build_load_history (sourcename,
 		      infile0 || whole_buffer);
 
+#ifdef HAVE_CHEZ
+  chez_gc_unpin (sourcename);
+#endif
   unbind_to (count, Qnil);
 }
 
@@ -3218,7 +3322,16 @@ vector_from_rev_list (Lisp_Object elems)
 {
   ptrdiff_t size = list_length (elems);
   Lisp_Object obj = make_nil_vector (size);
-  Lisp_Object *vec = XVECTOR (obj)->contents;
+#ifdef HAVE_CHEZ
+  /* In Chez mode, use ASET and let GC handle cons deallocation.  */
+  for (ptrdiff_t i = size - 1; i >= 0; i--)
+    {
+      Lisp_Object val = XCAR (elems);
+      ASET (obj, i, val);
+      elems = XCDR (elems);
+    }
+#else
+  Lisp_Object *vec = XVECTOR_CONTENTS (obj);
   for (ptrdiff_t i = size - 1; i >= 0; i--)
     {
       vec[i] = XCAR (elems);
@@ -3226,6 +3339,7 @@ vector_from_rev_list (Lisp_Object elems)
       free_cons (XCONS (elems));
       elems = next;
     }
+#endif
   return obj;
 }
 
@@ -3235,26 +3349,28 @@ static Lisp_Object
 bytecode_from_rev_list (Lisp_Object elems, source_t *source)
 {
   Lisp_Object obj = vector_from_rev_list (elems);
-  Lisp_Object *vec = XVECTOR (obj)->contents;
   ptrdiff_t size = ASIZE (obj);
+
+#ifdef HAVE_CHEZ
+  /* Chez mode: use AREF/ASET instead of XVECTOR(obj)->contents.  */
+#define VEC(i) AREF (obj, i)
+#define VSET(i, v) ASET (obj, i, v)
+#else
+  Lisp_Object *vec = XVECTOR_CONTENTS (obj);
+#define VEC(i) vec[i]
+#define VSET(i, v) (vec[i] = (v))
+#endif
 
   if (infile && size >= CLOSURE_CONSTANTS)
     {
-      /* Always read 'lazily-loaded' bytecode (generated by the
-         `byte-compile-dynamic' feature prior to Emacs 30) eagerly, to
-         avoid code in the fast path during execution.  */
-      if (CONSP (vec[CLOSURE_CODE])
-          && FIXNUMP (XCDR (vec[CLOSURE_CODE])))
-        vec[CLOSURE_CODE] = get_lazy_string (vec[CLOSURE_CODE]);
+      if (CONSP (VEC (CLOSURE_CODE))
+          && FIXNUMP (XCDR (VEC (CLOSURE_CODE))))
+        VSET (CLOSURE_CODE, get_lazy_string (VEC (CLOSURE_CODE)));
 
-      /* Lazily-loaded bytecode is represented by the constant slot being nil
-         and the bytecode slot a (lazily loaded) string containing the
-         print representation of (BYTECODE . CONSTANTS).  */
-      if (NILP (vec[CLOSURE_CONSTANTS]) && STRINGP (vec[CLOSURE_CODE]))
+      if (NILP (VEC (CLOSURE_CONSTANTS)) && STRINGP (VEC (CLOSURE_CODE)))
         {
-          Lisp_Object enc = vec[CLOSURE_CODE];
+          Lisp_Object enc = VEC (CLOSURE_CODE);
 	  eassert (!STRING_MULTIBYTE (enc));
-	  /* The string (always unibyte) must be decoded to be parsed.  */
 	  eassert (from_file_p (source));
 	  enc = Fdecode_coding_string (enc,
 				       source->emacs_mule_encoding
@@ -3264,39 +3380,38 @@ bytecode_from_rev_list (Lisp_Object elems, source_t *source)
           if (!CONSP (pair))
 	    invalid_syntax ("Invalid byte-code object", source);
 
-          vec[CLOSURE_CODE] = XCAR (pair);
-          vec[CLOSURE_CONSTANTS] = XCDR (pair);
+          VSET (CLOSURE_CODE, XCAR (pair));
+          VSET (CLOSURE_CONSTANTS, XCDR (pair));
         }
     }
 
   if (!(size >= CLOSURE_STACK_DEPTH && size <= CLOSURE_INTERACTIVE + 1
-	&& (FIXNUMP (vec[CLOSURE_ARGLIST])
-	    || CONSP (vec[CLOSURE_ARGLIST])
-	    || NILP (vec[CLOSURE_ARGLIST]))
-	&& ((STRINGP (vec[CLOSURE_CODE]) /* Byte-code function.  */
-	     && VECTORP (vec[CLOSURE_CONSTANTS])
+	&& (FIXNUMP (VEC (CLOSURE_ARGLIST))
+	    || CONSP (VEC (CLOSURE_ARGLIST))
+	    || NILP (VEC (CLOSURE_ARGLIST)))
+	&& ((STRINGP (VEC (CLOSURE_CODE)) /* Byte-code function.  */
+	     && VECTORP (VEC (CLOSURE_CONSTANTS))
 	     && size > CLOSURE_STACK_DEPTH
-	     && (FIXNATP (vec[CLOSURE_STACK_DEPTH])))
-	    || (CONSP (vec[CLOSURE_CODE]) /* Interpreted function.  */
-	        && (CONSP (vec[CLOSURE_CONSTANTS])
-	            || NILP (vec[CLOSURE_CONSTANTS]))))))
+	     && (FIXNATP (VEC (CLOSURE_STACK_DEPTH))))
+	    || (CONSP (VEC (CLOSURE_CODE)) /* Interpreted function.  */
+	        && (CONSP (VEC (CLOSURE_CONSTANTS))
+	            || NILP (VEC (CLOSURE_CONSTANTS)))))))
     invalid_syntax ("Invalid byte-code object", source);
 
-  if (STRINGP (vec[CLOSURE_CODE]))
+  if (STRINGP (VEC (CLOSURE_CODE)))
     {
-      if (STRING_MULTIBYTE (vec[CLOSURE_CODE]))
-        /* BYTESTR must have been produced by Emacs 20.2 or earlier
-           because it produced a raw 8-bit string for byte-code and
-           now such a byte-code string is loaded as multibyte with
-           raw 8-bit characters converted to multibyte form.
-           Convert them back to the original unibyte form.  */
-        vec[CLOSURE_CODE] = Fstring_as_unibyte (vec[CLOSURE_CODE]);
+      if (STRING_MULTIBYTE (VEC (CLOSURE_CODE)))
+        VSET (CLOSURE_CODE, Fstring_as_unibyte (VEC (CLOSURE_CODE)));
 
       /* Bytecode must be immovable.  */
-      pin_string (vec[CLOSURE_CODE]);
+      pin_string (VEC (CLOSURE_CODE));
     }
 
   XSETPVECTYPE (XVECTOR (obj), PVEC_CLOSURE);
+
+#undef VEC
+#undef VSET
+
   return obj;
 }
 
@@ -3337,7 +3452,7 @@ sub_char_table_from_rev_list (Lisp_Object elems, source_t *source)
   Lisp_Object tbl = make_uninit_sub_char_table (depth, min_char);
   for (int i = 0; i < size - 2; i++)
     {
-      XSUB_CHAR_TABLE (tbl)->contents[i] = XCAR (elems);
+      SCT_SET_CONTENTS (tbl, i, XCAR (elems));
       elems = XCDR (elems);
     }
   return tbl;
@@ -4673,6 +4788,49 @@ static void grow_obarray (struct Lisp_Obarray *o);
 static Lisp_Object
 intern_sym (Lisp_Object sym, Lisp_Object obarray, Lisp_Object index)
 {
+#ifdef HAVE_CHEZ
+  eassert (SYMBOLP (sym) && OBARRAYP (obarray) && FIXNUMP (index));
+
+  /* Set interned flag.  */
+  {
+    iptr flags = chez_sym_flags (sym);
+    int interned = (BASE_EQ (obarray, initial_obarray)
+		    ? SYMBOL_INTERNED_IN_INITIAL_OBARRAY
+		    : SYMBOL_INTERNED);
+    flags &= ~(3 << CHEZ_SYM_FLAG_INTERNED_SHIFT);
+    flags |= (interned << CHEZ_SYM_FLAG_INTERNED_SHIFT);
+    Svector_set (sym, CHEZ_SYM_SLOT_TAG, Sfixnum (flags));
+  }
+
+  /* Handle keywords.  */
+  Lisp_Object name = SYMBOL_NAME (sym);
+  if (SREF (name, 0) == ':' && BASE_EQ (obarray, initial_obarray))
+    {
+      iptr flags = chez_sym_flags (sym);
+      /* trapped_write = SYMBOL_NOWRITE */
+      flags &= ~(3 << CHEZ_SYM_FLAG_TRAPPED_SHIFT);
+      flags |= (SYMBOL_NOWRITE << CHEZ_SYM_FLAG_TRAPPED_SHIFT);
+      /* redirect = SYMBOL_PLAINVAL */
+      flags &= ~(7 << CHEZ_SYM_FLAG_REDIRECT_SHIFT);
+      flags |= (SYMBOL_PLAINVAL << CHEZ_SYM_FLAG_REDIRECT_SHIFT);
+      /* declared_special = true */
+      flags |= CHEZ_SYM_FLAG_SPECIAL_BIT;
+      Svector_set (sym, CHEZ_SYM_SLOT_TAG, Sfixnum (flags));
+      SET_SYMBOL_VAL (sym, sym);
+    }
+
+  struct Lisp_Obarray *o = XOBARRAY (obarray);
+  Lisp_Object *bkt = o->buckets + XFIXNUM (index);
+  Svector_set (sym, CHEZ_SYM_SLOT_NEXT,
+	       SYMBOLP (*bkt) ? *bkt : Sfalse);
+  /* Pin the symbol so the copying GC won't move it.  */
+  Slock_object (sym);
+  *bkt = sym;
+  o->count++;
+  if (o->count > obarray_size (o))
+    grow_obarray (o);
+  return sym;
+#else
   eassert (BARE_SYMBOL_P (sym) && OBARRAYP (obarray) && FIXNUMP (index));
   struct Lisp_Symbol *s = XBARE_SYMBOL (sym);
   s->u.s.interned = (BASE_EQ (obarray, initial_obarray)
@@ -4697,6 +4855,7 @@ intern_sym (Lisp_Object sym, Lisp_Object obarray, Lisp_Object index)
   if (o->count > obarray_size (o))
     grow_obarray (o);
   return sym;
+#endif
 }
 
 /* Intern a symbol with name STRING in OBARRAY using bucket INDEX.  */
@@ -4704,7 +4863,32 @@ intern_sym (Lisp_Object sym, Lisp_Object obarray, Lisp_Object index)
 Lisp_Object
 intern_driver (Lisp_Object string, Lisp_Object obarray, Lisp_Object index)
 {
+#ifdef HAVE_CHEZ
+  /* Diagnostic: detect duplicate creation of critical symbols.  */
+  if (SBYTES (string) == 1 && SDATA (string)[0] == 't')
+    {
+      fprintf (stderr, "[INTERN-DUP] Creating NEW 't' symbol! "
+	       "Qt=%p oblookup missed it. index=%ld obarray=%p\n",
+	       (void *) Qt, (long) XFIXNUM (index), (void *) obarray);
+      /* Check what oblookup actually returns now.  */
+      Lisp_Object retry = oblookup (obarray, "t", 1, 1);
+      fprintf (stderr, "[INTERN-DUP] oblookup retry: %p SYMBOLP=%d FIXNUMP=%d\n",
+	       (void *) retry, SYMBOLP (retry), FIXNUMP (retry));
+      if (SYMBOLP (retry))
+	fprintf (stderr, "[INTERN-DUP] retry IS a symbol, EQ_Qt=%d\n",
+		 EQ (retry, Qt));
+      fflush (stderr);
+    }
+  if (SBYTES (string) == 3 && memcmp (SDATA (string), "nil", 3) == 0)
+    {
+      fprintf (stderr, "[INTERN-DUP] Creating NEW 'nil' symbol! Qnil=%p\n",
+	       (void *) Qnil);
+      fflush (stderr);
+    }
+  SET_SYMBOL_VAL (Qobarray_cache, Qnil);
+#else
   SET_SYMBOL_VAL (XBARE_SYMBOL (Qobarray_cache), Qnil);
+#endif
   return intern_sym (Fmake_symbol (string), obarray, index);
 }
 
@@ -4733,9 +4917,7 @@ intern_c_string_1 (const char *str, ptrdiff_t len)
   if (!BARE_SYMBOL_P (tem))
     {
       Lisp_Object string;
-
       string = make_string (str, len);
-
       tem = intern_driver (string, obarray, tem);
     }
   return tem;
@@ -4896,6 +5078,39 @@ OBARRAY, if nil, defaults to the value of the variable `obarray'.  */)
   if (BASE_EQ (*loc, make_fixnum (0)))
     return Qnil;
 
+#ifdef HAVE_CHEZ
+  if (BASE_EQ (*loc, sym))
+    {
+      Lisp_Object next = Svector_ref (sym, CHEZ_SYM_SLOT_NEXT);
+      *loc = (next != Sfalse) ? next : make_fixnum (0);
+    }
+  else
+    {
+      Lisp_Object prev_sym = *loc;
+      while (SYMBOLP (prev_sym))
+	{
+	  Lisp_Object next = Svector_ref (prev_sym, CHEZ_SYM_SLOT_NEXT);
+	  if (BASE_EQ (next, sym))
+	    {
+	      Svector_set (prev_sym, CHEZ_SYM_SLOT_NEXT,
+			   Svector_ref (sym, CHEZ_SYM_SLOT_NEXT));
+	      goto removed;
+	    }
+	  prev_sym = next;
+	}
+      return Qnil;
+    }
+
+ removed:
+  {
+    iptr flags = chez_sym_flags (sym);
+    flags &= ~(3 << CHEZ_SYM_FLAG_INTERNED_SHIFT);
+    Svector_set (sym, CHEZ_SYM_SLOT_TAG, Sfixnum (flags));
+  }
+  o->count--;
+  return Qt;
+}
+#else
   struct Lisp_Symbol *s = XBARE_SYMBOL (sym);
   struct Lisp_Symbol *prev = XBARE_SYMBOL (*loc);
   if (prev == s)
@@ -4921,6 +5136,7 @@ OBARRAY, if nil, defaults to the value of the variable `obarray'.  */)
   o->count--;
   return Qt;
 }
+#endif
 
 
 /* Return the symbol in OBARRAY whose name matches the string
@@ -4940,6 +5156,45 @@ oblookup (Lisp_Object obarray, register const char *ptr, ptrdiff_t size, ptrdiff
       Lisp_Object sym = bucket;
       while (1)
 	{
+#ifdef HAVE_CHEZ
+	  if (!SYMBOLP (sym))
+	    {
+	      fprintf (stderr,
+		       "[OBLOOKUP] BUG: sym=%p is not SYMBOLP! "
+		       "Svectorp=%d looking_for='%.*s'\n",
+		       (void *) sym, Svectorp (sym),
+		       (int) size_byte, ptr);
+	      break;
+	    }
+	  Lisp_Object name = Svector_ref (sym, CHEZ_SYM_SLOT_NAME);
+	  if (!STRINGP (name))
+	    {
+	      fprintf (stderr,
+		       "[OBLOOKUP] BUG: sym=%p name=%p not STRINGP! "
+		       "Svectorp(name)=%d Svectorp(sym)=%d "
+		       "sym_slots=%ld looking_for='%.*s'\n",
+		       (void *) sym, (void *) name,
+		       Svectorp (name), Svectorp (sym),
+		       Svectorp (sym) ? Svector_length (sym) : -1,
+		       (int) size_byte, ptr);
+	      /* Try to show what's in each slot of the symbol.  */
+	      if (Svectorp (sym))
+		for (iptr s = 0; s < Svector_length (sym) && s < 6; s++)
+		  fprintf (stderr,
+			   "  sym slot[%ld]=%p Svectorp=%d Sfixnump=%d\n",
+			   s, (void *) Svector_ref (sym, s),
+			   Svectorp (Svector_ref (sym, s)),
+			   Sfixnump (Svector_ref (sym, s)));
+	      break;
+	    }
+	  if (SBYTES (name) == size_byte && SCHARS (name) == size
+	      && memcmp (SDATA (name), ptr, size_byte) == 0)
+	    return sym;
+	  Lisp_Object next = Svector_ref (sym, CHEZ_SYM_SLOT_NEXT);
+	  if (next == Sfalse)
+	    break;
+	  sym = next;
+#else
 	  struct Lisp_Symbol *s = XBARE_SYMBOL (sym);
 	  Lisp_Object name = s->u.s.name;
 	  if (SBYTES (name) == size_byte && SCHARS (name) == size
@@ -4948,6 +5203,7 @@ oblookup (Lisp_Object obarray, register const char *ptr, ptrdiff_t size, ptrdiff
 	  if (s->u.s.next == NULL)
 	    break;
 	  sym = make_lisp_symbol(s->u.s.next);
+#endif
 	}
     }
   return make_fixnum (idx);
@@ -5059,12 +5315,29 @@ grow_obarray (struct Lisp_Obarray *o)
     o->buckets[i] = make_fixnum (0);
   o->size_bits = new_bits;
 
-  /* Rehash symbols.
-     FIXME: this is expensive since we need to recompute the hash for every
-     symbol name.  Would it be reasonable to store it in the symbol?  */
+  /* Rehash symbols.  */
   for (ptrdiff_t i = 0; i < old_size; i++)
     {
       Lisp_Object obj = old_buckets[i];
+#ifdef HAVE_CHEZ
+      if (SYMBOLP (obj))
+	{
+	  Lisp_Object sym = obj;
+	  while (1)
+	    {
+	      Lisp_Object name = SYMBOL_NAME (sym);
+	      ptrdiff_t idx = obarray_index (o, SSDATA (name), SBYTES (name));
+	      Lisp_Object *loc = o->buckets + idx;
+	      Lisp_Object next = Svector_ref (sym, CHEZ_SYM_SLOT_NEXT);
+	      Svector_set (sym, CHEZ_SYM_SLOT_NEXT,
+			   SYMBOLP (*loc) ? *loc : Sfalse);
+	      *loc = sym;
+	      if (next == Sfalse)
+		break;
+	      sym = next;
+	    }
+	}
+#else
       if (BARE_SYMBOL_P (obj))
 	{
 	  struct Lisp_Symbol *s = XBARE_SYMBOL (obj);
@@ -5081,6 +5354,7 @@ grow_obarray (struct Lisp_Obarray *o)
 	      s = next;
 	    }
 	}
+#endif
     }
 
   hash_table_free_bytes (old_buckets, old_size * sizeof *old_buckets);
@@ -5199,6 +5473,39 @@ init_obarray_once (void)
   initial_obarray = Vobarray;
   staticpro (&initial_obarray);
 
+#ifdef HAVE_CHEZ
+  /* In Chez mode, allocate each symbol as a Chez vector before
+     calling define_symbol which initializes it.  Pin each one so
+     the copying GC marks them in-place (not copied).  */
+  for (int i = 0; i < ARRAYELTS (lispsym); i++)
+    {
+      chez_symbols[i] = chez_make_symbol (defsym_name[i]);
+      Slock_object (chez_symbols[i]);
+    }
+  chez_nsyms = ARRAYELTS (lispsym);
+  for (int i = 0; i < ARRAYELTS (lispsym); i++)
+    define_symbol (builtin_lisp_symbol (i), defsym_name[i]);
+
+  DEFSYM (Qunbound, "unbound");
+
+  /* Qnil = Snil (the Chez empty list, not a symbol vector).
+     Qt = chez_symbols[iQt] (a symbol vector, matching what the reader produces).
+     Set each symbol's value: nil→nil, t→t.
+     Use the actual symbol objects from chez_symbols[] for nil since Qnil != chez_symbols[0].  */
+  DEFSYM (Qnil, "nil");
+  {
+    Lisp_Object nil_sym = chez_symbols[iQnil];
+    SET_SYMBOL_VAL (nil_sym, Qnil);
+    make_symbol_constant (nil_sym);
+    chez_set_symbol_declared_special (nil_sym, true);
+  }
+
+  DEFSYM (Qt, "t");
+  /* Qt IS chez_symbols[iQt], so we can use Qt directly here.  */
+  SET_SYMBOL_VAL (Qt, Qt);
+  make_symbol_constant (Qt);
+  chez_set_symbol_declared_special (Qt, true);
+#else
   for (int i = 0; i < ARRAYELTS (lispsym); i++)
     define_symbol (builtin_lisp_symbol (i), defsym_name[i]);
 
@@ -5213,6 +5520,7 @@ init_obarray_once (void)
   SET_SYMBOL_VAL (XBARE_SYMBOL (Qt), Qt);
   make_symbol_constant (Qt);
   XBARE_SYMBOL (Qt)->u.s.declared_special = true;
+#endif
 
   /* Qt is correct even if not dumping.  loadup.el will set to nil at end.  */
   Vpurify_flag = Qt;
@@ -5230,6 +5538,17 @@ defsubr (union Aligned_Lisp_Subr *aname)
   XSETPVECTYPE (sname, PVEC_SUBR);
   XSETSUBR (tem, sname);
   set_symbol_function (sym, tem);
+#ifdef HAVE_CHEZ
+  if (strcmp (sname->symbol_name, "error") == 0)
+    {
+      Lisp_Object func = SYMBOL_FUNCTION (sym);
+      fprintf (stderr, "[DEFSUBR] error: sym=%p tem=%p func_after=%p NILP=%d "
+	       "same=%d chez3=%p\n",
+	       (void*)sym, (void*)tem, (void*)func, NILP(func),
+	       sym == chez_symbols[3], (void*)chez_symbols[3]);
+      fflush (stderr);
+    }
+#endif
 #ifdef HAVE_NATIVE_COMP
   eassert (NILP (Vcomp_abi_hash));
   Vcomp_subr_list = Fcons (tem, Vcomp_subr_list);
@@ -5239,14 +5558,30 @@ defsubr (union Aligned_Lisp_Subr *aname)
 /* Define an "integer variable"; a symbol whose value is forwarded to a
    C variable of type intmax_t.  Sample call (with "xx" to fool make-docfile):
    DEFxxVAR_INT ("emacs-priority", &emacs_priority, "Documentation");  */
+#ifdef HAVE_CHEZ
+/* Chez-mode helper: set symbol as forwarded special variable.  */
+static void
+chez_defvar_setup (Lisp_Object sym, struct Lisp_Fwd const *fwd)
+{
+  chez_set_symbol_declared_special (sym, true);
+  chez_set_symbol_redirect (sym, SYMBOL_FORWARDED);
+  /* Store forwarding pointer as fixnum in the value slot.  */
+  Svector_set (sym, CHEZ_SYM_SLOT_VAL, Sfixnum ((iptr) fwd));
+}
+#endif
+
 void
 defvar_int (struct Lisp_Fwd const *i_fwd, char const *namestring)
 {
   eassert (i_fwd->type == Lisp_Fwd_Int);
   Lisp_Object sym = intern_c_string (namestring);
+#ifdef HAVE_CHEZ
+  chez_defvar_setup (sym, i_fwd);
+#else
   XBARE_SYMBOL (sym)->u.s.declared_special = true;
   XBARE_SYMBOL (sym)->u.s.redirect = SYMBOL_FORWARDED;
   SET_SYMBOL_FWD (XBARE_SYMBOL (sym), i_fwd);
+#endif
 }
 
 /* Similar but define a variable whose value is t if 1, nil if 0.  */
@@ -5255,9 +5590,13 @@ defvar_bool (struct Lisp_Fwd const *b_fwd, char const *namestring)
 {
   eassert (b_fwd->type == Lisp_Fwd_Bool);
   Lisp_Object sym = intern_c_string (namestring);
+#ifdef HAVE_CHEZ
+  chez_defvar_setup (sym, b_fwd);
+#else
   XBARE_SYMBOL (sym)->u.s.declared_special = true;
   XBARE_SYMBOL (sym)->u.s.redirect = SYMBOL_FORWARDED;
   SET_SYMBOL_FWD (XBARE_SYMBOL (sym), b_fwd);
+#endif
   Vbyte_boolean_vars = Fcons (sym, Vbyte_boolean_vars);
 }
 
@@ -5270,10 +5609,20 @@ void
 defvar_lisp_nopro (struct Lisp_Fwd const *o_fwd, char const *namestring)
 {
   eassert (o_fwd->type == Lisp_Fwd_Obj);
+#ifdef HAVE_CHEZ
+  /* C zero-initializes Lisp_Object globals to 0x0 = Sfixnum(0).
+     Initialize to Snil before registering the variable.  */
+  if (*o_fwd->u.objvar == (Lisp_Object) 0)
+    *(Lisp_Object *) o_fwd->u.objvar = Snil;
+#endif
   Lisp_Object sym = intern_c_string (namestring);
+#ifdef HAVE_CHEZ
+  chez_defvar_setup (sym, o_fwd);
+#else
   XBARE_SYMBOL (sym)->u.s.declared_special = true;
   XBARE_SYMBOL (sym)->u.s.redirect = SYMBOL_FORWARDED;
   SET_SYMBOL_FWD (XBARE_SYMBOL (sym), o_fwd);
+#endif
 }
 
 void
@@ -5292,9 +5641,13 @@ defvar_kboard (struct Lisp_Fwd const *ko_fwd, char const *namestring)
 {
   eassert (ko_fwd->type == Lisp_Fwd_Kboard_Obj);
   Lisp_Object sym = intern_c_string (namestring);
+#ifdef HAVE_CHEZ
+  chez_defvar_setup (sym, ko_fwd);
+#else
   XBARE_SYMBOL (sym)->u.s.declared_special = true;
   XBARE_SYMBOL (sym)->u.s.redirect = SYMBOL_FORWARDED;
   SET_SYMBOL_FWD (XBARE_SYMBOL (sym), ko_fwd);
+#endif
 }
 
 /* Check that the elements of lpath exist.  */
@@ -5593,7 +5946,11 @@ to find all the symbols in an obarray, use `mapatoms'.  */);
 	       doc: /* List of values of all expressions which were read, evaluated and printed.
 Order is reverse chronological.
 This variable is obsolete as of Emacs 28.1 and should not be used.  */);
+#ifdef HAVE_CHEZ
+  chez_set_symbol_declared_special (intern ("values"), false);
+#else
   XBARE_SYMBOL (intern ("values"))->u.s.declared_special = false;
+#endif
 
   DEFVAR_LISP ("standard-input", Vstandard_input,
 	       doc: /* Stream for read to get input from.

@@ -25,15 +25,27 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #define DISP_TABLE_P(obj)						    \
   (CHAR_TABLE_P (obj)							    \
-   && EQ (XCHAR_TABLE (obj)->purpose, Qdisplay_table)			    \
+   && EQ (CT_PURPOSE (obj), Qdisplay_table)				    \
    && CHAR_TABLE_EXTRA_SLOTS (XCHAR_TABLE (obj)) == DISP_TABLE_EXTRA_SLOTS)
 
+#ifdef HAVE_CHEZ
+/* In Chez mode, struct Lisp_Char_Table * is just a Lisp_Object cast
+   (chez_xuntag returns (void *)tagged_ptr for pure Chez vectors).
+   Cast back to Lisp_Object to use CT_EXTRAS.  */
+#define DISP_TRUNC_GLYPH(dp) CT_EXTRAS ((Lisp_Object)(dp), 0)
+#define DISP_CONTINUE_GLYPH(dp) CT_EXTRAS ((Lisp_Object)(dp), 1)
+#define DISP_ESCAPE_GLYPH(dp) CT_EXTRAS ((Lisp_Object)(dp), 2)
+#define DISP_CTRL_GLYPH(dp) CT_EXTRAS ((Lisp_Object)(dp), 3)
+#define DISP_INVIS_VECTOR(dp) CT_EXTRAS ((Lisp_Object)(dp), 4)
+#define DISP_BORDER_GLYPH(dp) CT_EXTRAS ((Lisp_Object)(dp), 5)
+#else
 #define DISP_TRUNC_GLYPH(dp) ((dp)->extras[0])
 #define DISP_CONTINUE_GLYPH(dp) ((dp)->extras[1])
 #define DISP_ESCAPE_GLYPH(dp) ((dp)->extras[2])
 #define DISP_CTRL_GLYPH(dp) ((dp)->extras[3])
 #define DISP_INVIS_VECTOR(dp) ((dp)->extras[4])
 #define DISP_BORDER_GLYPH(dp) ((dp)->extras[5])
+#endif
 
 enum box
 {
@@ -54,14 +66,25 @@ enum box
 
 extern Lisp_Object disp_char_vector (struct Lisp_Char_Table *, int);
 
+#ifdef HAVE_CHEZ
+#define DISP_CHAR_VECTOR(dp, c)					\
+  (ASCII_CHAR_P (c)						\
+   ? (NILP (CT_ASCII ((Lisp_Object)(dp)))			\
+      ? CT_DEFALT ((Lisp_Object)(dp))				\
+      : (SUB_CHAR_TABLE_P (CT_ASCII ((Lisp_Object)(dp)))	\
+	 ? SCT_CONTENTS (CT_ASCII ((Lisp_Object)(dp)), c)	\
+	 : CT_ASCII ((Lisp_Object)(dp))))			\
+   : disp_char_vector (dp, c))
+#else
 #define DISP_CHAR_VECTOR(dp, c)				\
   (ASCII_CHAR_P (c)					\
    ? (NILP ((dp)->ascii)				\
       ? (dp)->defalt					\
       : (SUB_CHAR_TABLE_P ((dp)->ascii)			\
-	 ? XSUB_CHAR_TABLE ((dp)->ascii)->contents[c]	\
+	 ? SCT_CONTENTS ((dp)->ascii, c)		\
 	 : (dp)->ascii))				\
    : disp_char_vector (dp, c))
+#endif
 
 /* Defined in window.c.  */
 extern struct Lisp_Char_Table *window_display_table (struct window *);
@@ -77,7 +100,7 @@ extern struct Lisp_Char_Table *buffer_display_table (void);
 /* Return the current base (for indexing) of the GLYPH table,
    or 0 if the table isn't currently valid.  */
 #define GLYPH_TABLE_BASE  \
-  ((VECTORP (Vglyph_table)) ? XVECTOR (Vglyph_table)->contents : 0)
+  ((VECTORP (Vglyph_table)) ? XVECTOR_CONTENTS (Vglyph_table) : 0)
 
 /* Given BASE and LEN returned by the two previous macros,
    return nonzero if the GLYPH code G should be output as a single

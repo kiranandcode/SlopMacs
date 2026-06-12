@@ -2489,7 +2489,7 @@ menu_help_callback (char const *help_string, int pane, int item)
   Lisp_Object pane_name;
   Lisp_Object menu_object;
 
-  first_item = XVECTOR (menu_items)->contents;
+  first_item = XVECTOR_CONTENTS (menu_items);
   if (EQ (first_item[0], Qt))
     pane_name = first_item[MENU_ITEMS_PANE_NAME];
   else if (EQ (first_item[0], Qquote))

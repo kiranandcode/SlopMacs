@@ -426,6 +426,34 @@ mark_bytecode (struct bc_thread_state *bc)
     }
 }
 
+#ifdef HAVE_CHEZ
+/* Visit all Lisp_Objects on the bytecode stack for GC root locking.  */
+static void
+chez_visit_bytecode_roots (void (*visit) (Lisp_Object))
+{
+  struct bc_thread_state *bc = &current_thread->bc;
+  struct bc_frame *fp = bc->fp;
+  Lisp_Object *top = NULL;
+  for (;;)
+    {
+      struct bc_frame *next_fp = fp->saved_fp;
+      if (!next_fp)
+	break;
+      visit (fp->fun);
+      Lisp_Object *frame_base = next_fp->next_stack;
+      Lisp_Object *end = top ? top : (Lisp_Object *) fp - 1;
+      for (Lisp_Object *p = frame_base; p <= end; p++)
+	{
+	  Lisp_Object val = *p;
+	  if (val != (Lisp_Object) 0)
+	    visit (val);
+	}
+      top = fp->saved_top;
+      fp = next_fp;
+    }
+}
+#endif
+
 DEFUN ("internal-stack-stats", Finternal_stack_stats, Sinternal_stack_stats,
        0, 0, 0,
        doc: /* internal */)
@@ -508,7 +536,14 @@ exec_byte_code (Lisp_Object fun, ptrdiff_t args_template,
   Lisp_Object maxdepth = AREF (fun, CLOSURE_STACK_DEPTH);
   ptrdiff_t const_length = ASIZE (vector);
   ptrdiff_t bytestr_length = SCHARS (bytestr);
-  Lisp_Object *vectorp = XVECTOR (vector)->contents;
+#ifdef HAVE_CHEZ
+  /* In Chez mode, vector is a Chez vector; use AREF.  */
+  Lisp_Object *vectorp = NULL;  /* unused, CONST_REF macro used instead */
+#define CONST_REF(i) AREF (vector, (i))
+#else
+  Lisp_Object *vectorp = XVECTOR_CONTENTS (vector);
+#define CONST_REF(i) vectorp[(i)]
+#endif
 
   EMACS_INT max_stack = XFIXNAT (maxdepth);
   Lisp_Object *frame_base = bc->fp->next_stack;
@@ -550,6 +585,7 @@ exec_byte_code (Lisp_Object fun, ptrdiff_t args_template,
   else
     for (ptrdiff_t i = nargs - rest; i < nonrest; i++)
       PUSH (Qnil);
+
 
   while (true)
     {
@@ -640,11 +676,18 @@ exec_byte_code (Lisp_Object fun, ptrdiff_t args_template,
 	  arg = FETCH;
 	varref:
 	  {
-	    Lisp_Object v1 = vectorp[arg], v2;
+	    Lisp_Object v1 = CONST_REF (arg), v2;
+#ifdef HAVE_CHEZ
+	    if (SYMBOL_REDIRECT (v1) != SYMBOL_PLAINVAL
+		|| (v2 = SYMBOL_VAL (v1),
+		    BASE_EQ (v2, Qunbound)))
+	      v2 = Fsymbol_value (v1);
+#else
 	    if (XBARE_SYMBOL (v1)->u.s.redirect != SYMBOL_PLAINVAL
 		|| (v2 = XBARE_SYMBOL (v1)->u.s.val.value,
 		    BASE_EQ (v2, Qunbound)))
 	      v2 = Fsymbol_value (v1);
+#endif
 	    PUSH (v2);
 	    NEXT;
 	  }
@@ -711,11 +754,17 @@ exec_byte_code (Lisp_Object fun, ptrdiff_t args_template,
 	  arg = FETCH;
 	varset:
 	  {
-	    Lisp_Object sym = vectorp[arg];
+	    Lisp_Object sym = CONST_REF (arg);
 	    Lisp_Object val = POP;
+#ifdef HAVE_CHEZ
+	    if (SYMBOL_REDIRECT (sym) == SYMBOL_PLAINVAL
+		&& !SYMBOL_TRAPPED_WRITE_P (sym))
+	      SET_SYMBOL_VAL (sym, val);
+#else
 	    if (XBARE_SYMBOL (sym)->u.s.redirect == SYMBOL_PLAINVAL
 		&& !XBARE_SYMBOL (sym)->u.s.trapped_write)
 	      SET_SYMBOL_VAL (XBARE_SYMBOL (sym), val);
+#endif
 	    else
               set_internal (sym, val, Qnil, SET_INTERNAL_SET);
 	  }
@@ -747,7 +796,7 @@ exec_byte_code (Lisp_Object fun, ptrdiff_t args_template,
 	  arg = op - Bvarbind;
 	varbind:
 	  /* Specbind can signal and thus GC.  */
-	  specbind (vectorp[arg], POP);
+	  specbind (CONST_REF (arg), POP);
 	  NEXT;
 
 	CASE (Bcall6):
@@ -804,7 +853,11 @@ exec_byte_code (Lisp_Object fun, ptrdiff_t args_template,
 	    Lisp_Object original_fun = call_fun;
 	    /* Calls to symbols-with-pos don't need to be on the fast path.  */
 	    if (BARE_SYMBOL_P (call_fun))
+#ifdef HAVE_CHEZ
+	      call_fun = SYMBOL_FUNCTION (call_fun);
+#else
 	      call_fun = XBARE_SYMBOL (call_fun)->u.s.function;
+#endif
 	    if (CLOSUREP (call_fun))
 	      {
 		Lisp_Object template = AREF (call_fun, CLOSURE_ARGLIST);
@@ -880,10 +933,13 @@ exec_byte_code (Lisp_Object fun, ptrdiff_t args_template,
 	  }
 
 	CASE (Bgotoifnonnil):
-	  arg = FETCH2;
-	  if (!NILP (POP))
-	    goto op_branch;
-	  NEXT;
+	  {
+	    arg = FETCH2;
+	    Lisp_Object v1 = POP;
+	    if (!NILP (v1))
+	      goto op_branch;
+	    NEXT;
+	  }
 
 	CASE (Bgotoifnilelsepop):
 	  arg = FETCH2;
@@ -918,9 +974,15 @@ exec_byte_code (Lisp_Object fun, ptrdiff_t args_template,
 
 		Lisp_Object fun = fp->fun;
 		Lisp_Object bytestr = AREF (fun, CLOSURE_CODE);
+#ifdef HAVE_CHEZ
+		/* In Chez mode, CONST_REF uses the outer `vector` variable
+		   (from setup_frame), so we must update it here.  */
+		vector = AREF (fun, CLOSURE_CONSTANTS);
+#else
 		Lisp_Object vector = AREF (fun, CLOSURE_CONSTANTS);
+		vectorp = XVECTOR_CONTENTS (vector);
+#endif
 		bytestr_data = SDATA (bytestr);
-		vectorp = XVECTOR (vector)->contents;
 		if (BYTE_CODE_SAFE)
 		  {
 		    /* Only required for checking, not for execution.  */
@@ -940,7 +1002,7 @@ exec_byte_code (Lisp_Object fun, ptrdiff_t args_template,
 	  NEXT;
 
 	CASE (Bconstant2):
-	  PUSH (vectorp[FETCH2]);
+	  PUSH (CONST_REF (FETCH2));
 	  NEXT;
 
 	CASE (Bsave_excursion):
@@ -999,9 +1061,15 @@ exec_byte_code (Lisp_Object fun, ptrdiff_t args_template,
 
 		Lisp_Object fun = fp->fun;
 		Lisp_Object bytestr = AREF (fun, CLOSURE_CODE);
+#ifdef HAVE_CHEZ
+		/* In Chez mode, CONST_REF uses the outer `vector` variable
+		   (from setup_frame), so we must update it here.  */
+		vector = AREF (fun, CLOSURE_CONSTANTS);
+#else
 		Lisp_Object vector = AREF (fun, CLOSURE_CONSTANTS);
+		vectorp = XVECTOR_CONTENTS (vector);
+#endif
 		bytestr_data = SDATA (bytestr);
-		vectorp = XVECTOR (vector)->contents;
 		if (BYTE_CODE_SAFE)
 		  {
 		    /* Only required for checking, not for execution.  */
@@ -1765,6 +1833,14 @@ exec_byte_code (Lisp_Object fun, ptrdiff_t args_template,
 	    if (BYTE_CODE_SAFE && !HASH_TABLE_P (jmp_table))
               emacs_abort ();
             Lisp_Object v1 = POP;
+#ifdef HAVE_CHEZ
+	    /* Normalize dual-nil for hash lookup.  Hash tables from .elc
+	       files use chez_symbols[0] (nil symbol vector) as the key
+	       for nil, but runtime values use Snil (0x26).  Normalize
+	       so BASE_EQ matches.  */
+	    if (Snullp (v1))
+	      v1 = chez_symbols[0];
+#endif
             struct Lisp_Hash_Table *h = XHASH_TABLE (jmp_table);
 	    /* Do a linear search if there are few cases and the test is `eq'.
 	       (The table is assumed to be sized exactly; all entries are
@@ -1797,7 +1873,7 @@ exec_byte_code (Lisp_Object fun, ptrdiff_t args_template,
 	  if (BYTE_CODE_SAFE
 	      && ! (Bconstant <= op && op < Bconstant + const_length))
 	    emacs_abort ();
-	  PUSH (vectorp[op - Bconstant]);
+	  PUSH (CONST_REF (op - Bconstant));
 	  NEXT;
 	}
     }
@@ -1836,6 +1912,10 @@ syms_of_bytecode (void)
 
   defsubr (&Sbyte_code);
   defsubr (&Sinternal_stack_stats);
+
+#ifdef HAVE_CHEZ
+  chez_lock_bytecode_fn = chez_visit_bytecode_roots;
+#endif
 
 #ifdef BYTE_CODE_METER
 

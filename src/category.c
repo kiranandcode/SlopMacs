@@ -48,11 +48,11 @@ bset_category_table (struct buffer *b, Lisp_Object val)
 static Lisp_Object
 hash_get_category_set (Lisp_Object table, Lisp_Object category_set)
 {
-  if (NILP (XCHAR_TABLE (table)->extras[1]))
+  if (NILP (CT_EXTRAS (table, 1)))
     set_char_table_extras
       (table, 1,
        make_hash_table (&hashtest_equal, DEFAULT_HASH_SIZE, Weak_None));
-  struct Lisp_Hash_Table *h = XHASH_TABLE (XCHAR_TABLE (table)->extras[1]);
+  struct Lisp_Hash_Table *h = XHASH_TABLE (CT_EXTRAS (table, 1));
   hash_hash_t hash;
   ptrdiff_t i = hash_find_get_hash (h, category_set, &hash);
   if (i >= 0)
@@ -162,7 +162,7 @@ DEFUN ("category-table-p", Fcategory_table_p, Scategory_table_p, 1, 1, 0,
   (Lisp_Object arg)
 {
   if (CHAR_TABLE_P (arg)
-      && EQ (XCHAR_TABLE (arg)->purpose, Qcategory_table))
+      && EQ (CT_PURPOSE (arg), Qcategory_table))
     return Qt;
   return Qnil;
 }
@@ -219,11 +219,11 @@ copy_category_table (Lisp_Object table)
 {
   table = copy_char_table (table);
 
-  if (! NILP (XCHAR_TABLE (table)->defalt))
+  if (! NILP (CT_DEFALT (table)))
     set_char_table_defalt (table,
-			   Fcopy_sequence (XCHAR_TABLE (table)->defalt));
+			   Fcopy_sequence (CT_DEFALT (table)));
   set_char_table_extras
-    (table, 0, Fcopy_sequence (XCHAR_TABLE (table)->extras[0]));
+    (table, 0, Fcopy_sequence (CT_EXTRAS (table, 0)));
   map_char_table (copy_category_entry, Qnil, table, table);
 
   return table;

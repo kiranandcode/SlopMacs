@@ -1113,8 +1113,14 @@ tim_sort (Lisp_Object predicate, Lisp_Object keyfunc,
 	{
 	  /* Fill with valid Lisp values in case a GC occurs before all
 	     keys have been computed.  */
-	  static_assert (NIL_IS_ZERO);
 	  keys = allocated_keys = xzalloc (length * word_size);
+#ifdef HAVE_CHEZ
+	  /* In Chez mode, Qnil is not zero, so fill explicitly.  */
+	  for (ptrdiff_t j = 0; j < length; j++)
+	    keys[j] = Qnil;
+#else
+	  static_assert (NIL_IS_ZERO);
+#endif
 	}
 
       lo.keys = keys;

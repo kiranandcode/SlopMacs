@@ -2525,7 +2525,7 @@ It returns the number of characters changed.  */)
       string_multibyte = STRING_MULTIBYTE (table);
     }
   else if (! (CHAR_TABLE_P (table)
-	      && EQ (XCHAR_TABLE (table)->purpose, Qtranslation_table)))
+	      && EQ (CT_PURPOSE (table), Qtranslation_table)))
     error ("Not a translation table");
 
   ptrdiff_t pos = XFIXNUM (start);
@@ -3528,7 +3528,6 @@ styled_format (ptrdiff_t nargs, Lisp_Object *args, bool message)
       multibyte = true;
 
   Lisp_Object quoting_style = message ? Ftext_quoting_style () : Qnil;
-
   ptrdiff_t ispec;
   ptrdiff_t nspec = 0;
 

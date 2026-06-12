@@ -8293,7 +8293,7 @@ lookup_glyphless_char_display (int c, struct it *it)
       if (c >= 0)
 	glyphless_method = CHAR_TABLE_REF (Vglyphless_char_display, c);
       else
-	glyphless_method = XCHAR_TABLE (Vglyphless_char_display)->extras[0];
+	glyphless_method = CT_EXTRAS (Vglyphless_char_display, 0);
 
       if (CONSP (glyphless_method))
 	glyphless_method = FRAME_WINDOW_P (it->f)
@@ -18379,22 +18379,25 @@ Lisp_Object
 disp_char_vector (struct Lisp_Char_Table *dp, int c)
 {
   Lisp_Object val;
+#ifdef HAVE_CHEZ
+  Lisp_Object table = (Lisp_Object) dp;
+#else
+  Lisp_Object table;
+  XSETCHAR_TABLE (table, dp);
+#endif
 
   if (ASCII_CHAR_P (c))
     {
-      val = dp->ascii;
+      val = CT_ASCII (table);
       if (SUB_CHAR_TABLE_P (val))
-	val = XSUB_CHAR_TABLE (val)->contents[c];
+	val = SCT_CONTENTS (val, c);
     }
   else
     {
-      Lisp_Object table;
-
-      XSETCHAR_TABLE (table, dp);
       val = char_table_ref (table, c);
     }
   if (NILP (val))
-    val = dp->defalt;
+    val = CT_DEFALT (table);
   return val;
 }
 
