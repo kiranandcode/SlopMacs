@@ -1870,6 +1870,22 @@ process_quit_flag (void)
 void
 probably_quit (void)
 {
+#ifdef THREADS_ENABLED
+  /* When the command loop runs on the executor thread, C-g belongs
+     to it: don't let the UI thread's redisplay Lisp (jit-lock, mode
+     line) or other background threads consume the quit flag meant
+     for the user's command.  Pending signals are still processed.
+     `kill-emacs' quits are honored anywhere.  */
+  if (command_executor_active_p ()
+      && !current_thread_is_command_executor ()
+      && !NILP (Vquit_flag)
+      && !EQ (Vquit_flag, Qkill_emacs))
+    {
+      if (pending_signals)
+	process_pending_signals ();
+      return;
+    }
+#endif
   specpdl_ref gc_count = inhibit_garbage_collection ();
   if (!NILP (Vquit_flag) && NILP (Vinhibit_quit))
     process_quit_flag ();

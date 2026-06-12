@@ -3880,6 +3880,21 @@ extern bool volatile pending_signals;
 extern void process_pending_signals (void);
 extern void probably_quit (void);
 
+#ifdef THREADS_ENABLED
+/* Preemptive thread scheduling; see thread.c.  */
+extern unsigned int thread_preempt_tick;
+extern int thread_preempt_parked;
+extern void thread_consider_preempt (void);
+
+/* Command executor / UI thread split; see thread.c.  */
+extern bool command_executor_busy;
+extern bool command_executor_active_p (void);
+extern bool current_thread_is_command_executor (void);
+extern void command_executor_set_busy (bool);
+extern void start_command_executor (void);
+extern void ui_thread_loop (void);
+#endif
+
 /* Check quit-flag and quit if it is non-nil.  Typing C-g does not
    directly cause a quit; it only sets Vquit_flag.  So the program
    needs to call maybe_quit at times when it is safe to quit.  Every
@@ -3891,13 +3906,21 @@ extern void probably_quit (void);
    If quit-flag is set to `kill-emacs' the SIGINT handler has received
    a request to exit Emacs when it is safe to do.
 
-   When not quitting, process any pending signals.  */
+   When not quitting, process any pending signals.
+
+   Quit checks are also the safe points for preemptive thread
+   scheduling: every 64th call considers yielding the interpreter to
+   another Lisp thread (see thread_consider_preempt).  */
 
 INLINE void
 maybe_quit (void)
 {
   if (!NILP (Vquit_flag) || pending_signals)
     probably_quit ();
+#ifdef THREADS_ENABLED
+  if ((++thread_preempt_tick & 0x3F) == 0)
+    thread_consider_preempt ();
+#endif
 }
 
 /* Process a quit rarely, based on a counter COUNT, for efficiency.

@@ -68,6 +68,50 @@ struct thread_state *all_threads = &main_thread.s;
 static sys_mutex_t global_lock;
 
 extern volatile int interrupt_input_blocked;
+extern bool redisplaying_p;
+
+/* Preemptive time-slicing of Lisp threads.
+
+   Stock Emacs threads switch only at explicit blocking points
+   (thread-yield, mutex/condvar waits, thread_select), so a CPU-bound
+   thread owns the interpreter until it blocks.  When
+   `thread-preemption' is non-nil, maybe_quit doubles as a scheduling
+   point: once the running thread has held the global lock for longer
+   than `thread-slice-ms' milliseconds, it offers the lock to the
+   other live threads.  Because maybe_quit is called on bytecode
+   backward branches, at funcall entry, and inside the long-running
+   loops of C primitives (regex matching, list traversal, ...), both
+   Lisp code and most C primitives become preemptible.
+
+   Preemption is suppressed inside critical sections: when quitting
+   is inhibited, during GC and redisplay, and while input is
+   blocked.  */
+
+/* The user-visible knobs `thread-preemption' (thread_preemption_enabled)
+   and `thread-slice-ms' (thread_slice_ms) are DEFVAR'd in
+   syms_of_threads and live in the generated globals struct.  */
+
+/* Incremented by every maybe_quit call (see lisp.h); every 64th call
+   funnels into thread_consider_preempt.  */
+unsigned int thread_preempt_tick;
+
+/* Count of threads currently parked by forced preemption (as opposed
+   to voluntary blocking).  While nonzero, sweep_strings skips string
+   data compaction: a preempted thread's C frames may hold raw
+   pointers into string data, which compaction would relocate.  */
+int thread_preempt_parked;
+
+/* Monotonic timestamp (ms) when the current thread acquired the
+   global lock; reset in post_acquire_global_lock.  */
+static double thread_slice_start_ms;
+
+static double
+thread_monotonic_ms (void)
+{
+  struct timespec ts;
+  clock_gettime (CLOCK_MONOTONIC, &ts);
+  return ts.tv_sec * 1000.0 + ts.tv_nsec / 1.0e6;
+}
 
 
 
@@ -116,6 +160,9 @@ post_acquire_global_lock (struct thread_state *self)
      unbind_for_thread_switch might) correctly, because we are already
      running in the context of the thread pointed by SELF.  */
   current_thread = self;
+
+  /* Start a fresh preemption time slice for the acquiring thread.  */
+  thread_slice_start_ms = thread_monotonic_ms ();
 
   if (prev_thread != current_thread)
     {
@@ -739,6 +786,136 @@ DEFUN ("thread-yield", Fthread_yield, Sthread_yield, 0, 0, 0,
   return Qnil;
 }
 
+/* ====================================================================
+   Command executor / UI thread split.
+
+   When enabled (interactive sessions; see the call site in emacs.c),
+   the editor command loop runs on a dedicated "command-executor" Lisp
+   thread, and the OS main thread becomes a pure UI thread that only
+   redisplays and sleeps.  Combined with preemptive time-slicing
+   (thread_consider_preempt), this keeps the display live while
+   commands run: the executor yields the global lock every
+   `thread-slice-ms', and the UI thread repaints what changed.
+
+   The executor owns all Lisp execution: startup files, commands,
+   hooks, recursive edits, and the minibuffer.  The UI thread runs
+   Lisp only indirectly through redisplay (jit-lock, mode line
+   formatting) — the same Lisp that runs mid-command today whenever
+   code calls sit-for.  C-g is routed to the executor: see
+   probably_quit and handle_interrupt.
+   ==================================================================== */
+
+static struct thread_state *command_executor_thread;
+static sys_cond_t ui_wake_cond;
+
+/* True while the executor is running a command (or its hooks), false
+   while it waits for input.  Maintained by command_loop_1.  When
+   idle, the executor's own read_char does the redisplaying, so the
+   UI thread sleeps long; when busy, the UI thread redisplays on a
+   ~30ms cadence.  */
+bool command_executor_busy;
+
+bool
+command_executor_active_p (void)
+{
+  return command_executor_thread != NULL
+    && thread_live_p (command_executor_thread);
+}
+
+bool
+current_thread_is_command_executor (void)
+{
+  return command_executor_thread != NULL
+    && current_thread == command_executor_thread;
+}
+
+/* Called by command_loop_1 around command execution.  Signaling the
+   UI thread on the idle->busy transition starts its redisplay cadence
+   immediately rather than after the current sleep expires.  */
+
+void
+command_executor_set_busy (bool busy)
+{
+  if (busy && !command_executor_busy)
+    sys_cond_signal (&ui_wake_cond);
+  command_executor_busy = busy;
+}
+
+DEFUN ("command-executor--run", Fcommand_executor__run,
+       Scommand_executor__run, 0, 0, 0,
+       doc: /* Body of the command-executor thread.  Internal use only.  */)
+  (void)
+{
+  Frecursive_edit ();
+  return Qnil;
+}
+
+void
+start_command_executor (void)
+{
+  Lisp_Object thread
+    = Fmake_thread (Fintern (build_string ("command-executor--run"), Qnil),
+		    build_string ("command-executor"), Qnil);
+  command_executor_thread = XTHREAD (thread);
+}
+
+static void
+ui_wait_callback (void *arg)
+{
+  struct thread_state *self = current_thread;
+  /* 30ms redisplay cadence while a command runs; long sleeps while
+     the executor waits for input (it redisplays itself then).  */
+  sys_cond_timedwait (&ui_wake_cond, &global_lock,
+		      command_executor_busy ? 30 : 500);
+  post_acquire_global_lock (self);
+}
+
+void
+ui_thread_loop (void)
+{
+  while (true)
+    {
+      if (!command_executor_active_p ())
+	{
+	  /* The command loop never returns; if the executor died,
+	     nothing sensible remains to do.  */
+	  fputs ("emacs: command-executor thread died; exiting.\n", stderr);
+	  exit (1);
+	}
+      if (command_executor_busy
+	  && !redisplaying_p
+	  && NILP (Vinhibit_redisplay))
+	redisplay_preserve_echo_area (35);
+      flush_stack_call_func (ui_wait_callback, NULL);
+    }
+}
+
+/* Called from maybe_quit (every 64th invocation; see lisp.h).
+   Yield the global lock if the current thread's time slice has
+   expired and it is safe to do so.  */
+
+void
+thread_consider_preempt (void)
+{
+  if (!thread_preemption_enabled)
+    return;
+  /* Fast path: only one live thread, nobody to yield to.  */
+  if (all_threads->next_thread == NULL)
+    return;
+  /* Don't switch inside critical sections.  */
+  if (!NILP (Vinhibit_quit)
+      || gc_in_progress
+      || redisplaying_p
+      || interrupt_input_blocked > 0)
+    return;
+  if (thread_monotonic_ms () - thread_slice_start_ms < thread_slice_ms)
+    return;
+
+  thread_preempt_parked++;
+  flush_stack_call_func (yield_callback, NULL);
+  thread_preempt_parked--;
+}
+
 static Lisp_Object
 invoke_thread_function (void)
 {
@@ -1246,6 +1423,7 @@ void
 init_threads (void)
 {
   sys_cond_init (&main_thread.s.thread_condvar);
+  sys_cond_init (&ui_wake_cond);
   sys_mutex_init (&global_lock);
   sys_mutex_lock (&global_lock);
   current_thread = &main_thread.s;
@@ -1286,6 +1464,7 @@ syms_of_threads (void)
       defsubr (&Sthread_last_error);
       defsubr (&Sthread_buffer_disposition);
       defsubr (&Sthread_set_buffer_disposition);
+      defsubr (&Scommand_executor__run);
 
       staticpro (&last_thread_error);
       last_thread_error = Qnil;
@@ -1303,6 +1482,22 @@ syms_of_threads (void)
   Fput (Qthread_buffer_killed, Qerror_message,
 	build_string ("Thread's current buffer killed"));
   DEFSYM (Qsilently, "silently");
+
+  DEFVAR_BOOL ("thread-preemption", thread_preemption_enabled,
+    doc: /* Non-nil means Lisp threads are preemptively time-sliced.
+When enabled, a thread that runs longer than `thread-slice-ms'
+without blocking yields the interpreter to other live threads at the
+next safe point (quit check), instead of monopolizing it until it
+blocks on I/O.  This keeps the editor responsive while a background
+thread computes.  */);
+  thread_preemption_enabled = true;
+
+  DEFVAR_INT ("thread-slice-ms", thread_slice_ms,
+    doc: /* Time slice in milliseconds for preemptive thread scheduling.
+A running thread offers the CPU to other threads once it has run this
+long without blocking.  Only used when `thread-preemption' is
+non-nil.  */);
+  thread_slice_ms = 15;
 
   DEFVAR_LISP ("main-thread", Vmain_thread,
     doc: /* The main thread of Emacs.  */);

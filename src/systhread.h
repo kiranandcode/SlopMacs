@@ -144,6 +144,7 @@ extern void sys_mutex_unlock (sys_mutex_t *);
 
 extern void sys_cond_init (sys_cond_t *);
 extern void sys_cond_wait (sys_cond_t *, sys_mutex_t *);
+extern bool sys_cond_timedwait (sys_cond_t *, sys_mutex_t *, int);
 extern void sys_cond_signal (sys_cond_t *);
 extern void sys_cond_broadcast (sys_cond_t *);
 extern void sys_cond_destroy (sys_cond_t *);

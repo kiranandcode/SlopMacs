@@ -1430,8 +1430,18 @@ command_loop_1 (void)
       /* Read next key sequence; i gets its length.  */
       raw_keybuf_count = 0;
       Lisp_Object keybuf[READ_KEY_ELTS];
+#ifdef THREADS_ENABLED
+      /* Tell the UI thread we are idle: while we wait for input,
+	 read_char does the redisplaying.  */
+      command_executor_set_busy (false);
+#endif
       int i = read_key_sequence (keybuf, Qnil, false, true, true, false,
 				 false);
+#ifdef THREADS_ENABLED
+      /* A complete key sequence is about to run as a command; the UI
+	 thread takes over redisplay until we come back here.  */
+      command_executor_set_busy (true);
+#endif
 
       /* A filter may have run while we were reading the input.  */
       if (! FRAME_LIVE_P (XFRAME (selected_frame)))
@@ -12540,6 +12550,13 @@ clear_waiting_for_input (void)
   input_available_clear_time = 0;
 }
 
+/* If Emacs is stuck because `inhibit-quit' is true, then keep track
+   of the number of times C-g has been requested.  If C-g is pressed
+   enough times, then quit anyway.  See bug#6585.  Declared here as
+   well because handle_interrupt_signal updates it when the command
+   executor is active; defined below, before handle_interrupt.  */
+static int volatile force_quit_count;
+
 /* The SIGINT handler.
 
    If we have a frame on the controlling tty, we assume that the
@@ -12553,6 +12570,26 @@ handle_interrupt_signal (int sig)
   struct terminal *terminal = get_named_terminal (dev_tty);
   if (!terminal)
     {
+#ifdef THREADS_ENABLED
+      /* When the command loop runs on the executor thread (e.g. web
+	 display sessions), SIGINT is the display proxy forwarding the
+	 user's C-g while Lisp is busy.  Treat it as a quit request,
+	 not as a request to terminate Emacs.  Only set flags here: we
+	 are in a signal handler on the UI thread while the executor
+	 may be running Lisp, so we must not touch the global lock or
+	 thread bookkeeping (handle_interrupt would, via
+	 maybe_reacquire_global_lock).  The executor acts on the flag
+	 at its next quit check, within thread-slice-ms.  */
+      if (command_executor_active_p ())
+	{
+	  int count = NILP (Vquit_flag) ? 1 : force_quit_count + 1;
+	  force_quit_count = count;
+	  if (count == 3)
+	    Vinhibit_quit = Qnil;
+	  Vquit_flag = Qt;
+	  return;
+	}
+#endif
       /* If there are no frames there, let's pretend that we are a
          well-behaving UN*X program and quit.  We must not call Lisp
          in a signal handler, so tell maybe_quit to exit when it is
@@ -12594,11 +12631,6 @@ read_stdin (void)
   char c;
   return read (STDIN_FILENO, &c, 1) == 1 ? c : EOF;
 }
-
-/* If Emacs is stuck because `inhibit-quit' is true, then keep track
-   of the number of times C-g has been requested.  If C-g is pressed
-   enough times, then quit anyway.  See bug#6585.  */
-static int volatile force_quit_count;
 
 /* This routine is called at interrupt level in response to C-g.
 
@@ -12744,7 +12776,19 @@ handle_interrupt (bool in_signal_handler)
       maybe_reacquire_global_lock ();
     }
 #endif
-  if (waiting_for_input && !echoing)
+  if (waiting_for_input && !echoing
+#ifdef THREADS_ENABLED
+      /* When the command loop runs on the executor thread, the
+	 read_char waiting in waiting_for_input belongs to that
+	 thread, but signal delivery put us on the main (UI) thread —
+	 longjmping into another thread's getcjmp is fatal.  Leave
+	 Vquit_flag set; the executor acts on it at its next quit
+	 check (within thread-slice-ms when busy, or when input
+	 processing resumes when idle).  */
+      && !(command_executor_active_p ()
+	   && !current_thread_is_command_executor ())
+#endif
+      )
     quit_throw_to_read_char (in_signal_handler);
 #endif
 }

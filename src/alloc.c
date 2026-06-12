@@ -1921,7 +1921,16 @@ sweep_strings (void)
 
   string_blocks = live_blocks;
   free_large_strings ();
+#ifdef THREADS_ENABLED
+  /* A thread parked by preemptive scheduling may hold raw pointers
+     into string data in its suspended C frames; compaction would
+     relocate that data underneath it.  Skip compaction until no
+     thread is parked (see thread_consider_preempt).  */
+  if (thread_preempt_parked == 0)
+    compact_small_strings ();
+#else
   compact_small_strings ();
+#endif
 
   check_string_free_list ();
 }

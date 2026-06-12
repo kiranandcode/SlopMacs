@@ -2636,6 +2636,19 @@ Using an Emacs configured with --with-x-toolkit=lucid does not have this problem
 
   /* Enter editor command loop.  This never returns.  */
   set_initial_minibuffer_mode ();
+#ifdef THREADS_ENABLED
+  if (!noninteractive && !IS_DAEMON
+      && !getenv ("EMACS_NO_COMMAND_EXECUTOR"))
+    {
+      /* Run the command loop (and with it all Lisp execution,
+	 including startup files) on a dedicated executor thread; the
+	 OS main thread becomes the UI thread, which only redisplays
+	 and handles signal delivery.  See thread.c.  */
+      start_command_executor ();
+      ui_thread_loop ();
+      eassume (false);
+    }
+#endif
   Frecursive_edit ();
   eassume (false);
 }

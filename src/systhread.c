@@ -17,6 +17,7 @@ You should have received a copy of the GNU General Public License
 along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 
 #include <config.h>
+#include <errno.h>
 #include <setjmp.h>
 #include <stdio.h>
 #include <string.h>
@@ -57,6 +58,12 @@ sys_cond_init (sys_cond_t *c)
 void
 sys_cond_wait (sys_cond_t *c, sys_mutex_t *m)
 {
+}
+
+bool
+sys_cond_timedwait (sys_cond_t *c, sys_mutex_t *m, int msecs)
+{
+  return false;
 }
 
 void
@@ -171,6 +178,25 @@ sys_cond_wait (sys_cond_t *sys_cond, sys_mutex_t *sys_mutex)
   pthread_mutex_t *mutex = SYSTHREAD_ALIGN_PTR (pthread_mutex_t, sys_mutex);
   int error = pthread_cond_wait (cond, mutex);
   eassert (error == 0);
+}
+
+bool
+sys_cond_timedwait (sys_cond_t *sys_cond, sys_mutex_t *sys_mutex, int msecs)
+{
+  pthread_cond_t *cond = SYSTHREAD_ALIGN_PTR (pthread_cond_t, sys_cond);
+  pthread_mutex_t *mutex = SYSTHREAD_ALIGN_PTR (pthread_mutex_t, sys_mutex);
+  struct timespec ts;
+  clock_gettime (CLOCK_REALTIME, &ts);
+  ts.tv_sec += msecs / 1000;
+  ts.tv_nsec += (msecs % 1000) * 1000000L;
+  if (ts.tv_nsec >= 1000000000L)
+    {
+      ts.tv_sec++;
+      ts.tv_nsec -= 1000000000L;
+    }
+  int error = pthread_cond_timedwait (cond, mutex, &ts);
+  eassert (error == 0 || error == ETIMEDOUT);
+  return error == 0;
 }
 
 void
@@ -360,6 +386,17 @@ sys_cond_wait (sys_cond_t *cond, sys_mutex_t *mutex)
 
   /* Per the API, re-acquire the mutex.  */
   EnterCriticalSection ((LPCRITICAL_SECTION)mutex);
+}
+
+bool
+sys_cond_timedwait (sys_cond_t *cond, sys_mutex_t *mutex, int msecs)
+{
+  /* Timed waiting is not implemented for the hand-rolled w32
+     condition variables; fall back to an untimed wait.  Only the UI
+     thread loop uses the timeout, and that feature is currently
+     developed for POSIX builds.  */
+  sys_cond_wait (cond, mutex);
+  return true;
 }
 
 void
