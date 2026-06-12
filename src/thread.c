@@ -805,28 +805,48 @@ DEFUN ("thread-yield", Fthread_yield, Sthread_yield, 0, 0, 0,
    probably_quit and handle_interrupt.
    ==================================================================== */
 
-static struct thread_state *command_executor_thread;
+/* The current executor's thread object.  Kept as a staticpro'd Lisp
+   root so the GC cannot reap a dead executor's thread_state while we
+   still point at it.  */
+static Lisp_Object command_executor_thread_obj;
 static sys_cond_t ui_wake_cond;
 
-/* True while the executor is running a command (or its hooks), false
-   while it waits for input.  Maintained by command_loop_1.  When
-   idle, the executor's own read_char does the redisplaying, so the
-   UI thread sleeps long; when busy, the UI thread redisplays on a
-   ~30ms cadence.  */
-bool command_executor_busy;
+/* Number of commands currently executing across all executor threads:
+   the foreground one plus any detached background commands.  The UI
+   thread redisplays on its fast cadence while this is nonzero; when
+   it is zero, the foreground executor's own read_char does the
+   redisplaying.  */
+static int command_busy_count;
+
+/* Monotonic timestamp (ms) when the current foreground command
+   started; detach-on-slow triggers off this.  */
+static double executor_command_start_ms;
+
+static struct thread_state *
+command_executor_ptr (void)
+{
+  return THREADP (command_executor_thread_obj)
+    ? XTHREAD (command_executor_thread_obj) : NULL;
+}
 
 bool
 command_executor_active_p (void)
 {
-  return command_executor_thread != NULL
-    && thread_live_p (command_executor_thread);
+  struct thread_state *ex = command_executor_ptr ();
+  return ex != NULL && thread_live_p (ex);
 }
 
 bool
 current_thread_is_command_executor (void)
 {
-  return command_executor_thread != NULL
-    && current_thread == command_executor_thread;
+  struct thread_state *ex = command_executor_ptr ();
+  return ex != NULL && current_thread == ex;
+}
+
+bool
+command_executor_busy_p (void)
+{
+  return command_busy_count > 0;
 }
 
 /* Called by command_loop_1 around command execution.  Signaling the
@@ -836,27 +856,101 @@ current_thread_is_command_executor (void)
 void
 command_executor_set_busy (bool busy)
 {
-  if (busy && !command_executor_busy)
-    sys_cond_signal (&ui_wake_cond);
-  command_executor_busy = busy;
+  if (busy && !current_thread->in_command)
+    {
+      current_thread->in_command = true;
+      if (command_busy_count++ == 0)
+	sys_cond_signal (&ui_wake_cond);
+      if (current_thread_is_command_executor ())
+	executor_command_start_ms = thread_monotonic_ms ();
+    }
+  else if (!busy && current_thread->in_command)
+    {
+      current_thread->in_command = false;
+      command_busy_count--;
+    }
+}
+
+/* Called by command_loop_1 just before it would read the next key
+   sequence.  If this thread was detached (a newer executor owns input
+   now), unwind out of its command loop entirely; the thread entry
+   function catches the tag and lets the thread die.  */
+
+void
+command_executor_exit_if_detached (void)
+{
+  if (current_thread->executor_thread
+      && !current_thread_is_command_executor ())
+    Fthrow (Qcommand_executor_detached, Qnil);
+}
+
+static Lisp_Object
+executor_recursive_edit (Lisp_Object ignore)
+{
+  return Frecursive_edit ();
+}
+
+static Lisp_Object
+executor_catch_detached (Lisp_Object ignore)
+{
+  return internal_catch (Qcommand_executor_detached,
+			 executor_recursive_edit, Qnil);
 }
 
 DEFUN ("command-executor--run", Fcommand_executor__run,
        Scommand_executor__run, 0, 0, 0,
-       doc: /* Body of the command-executor thread.  Internal use only.  */)
+       doc: /* Body of the initial command-executor thread.  Internal use only.  */)
   (void)
 {
-  Frecursive_edit ();
+  current_thread->executor_thread = true;
+  /* The top-level Qtop_level catch lives in command_loop, entered via
+     recursive-edit; only the detached tag needs catching here.  */
+  internal_catch (Qcommand_executor_detached, executor_recursive_edit, Qnil);
+  return Qnil;
+}
+
+DEFUN ("command-executor--resume", Fcommand_executor__resume,
+       Scommand_executor__resume, 0, 0, 0,
+       doc: /* Body of a replacement command-executor thread, spawned when a
+slow command detaches.  Internal use only.  */)
+  (void)
+{
+  current_thread->executor_thread = true;
+  /* Unlike the initial executor, command_loop takes its recursive
+     branch here (command_loop_level is transiently nonzero while the
+     detached thread unwinds), which has no Qtop_level catch -- so
+     provide one, and keep re-entering the command loop until we are
+     ourselves detached.  */
+  while (current_thread_is_command_executor ())
+    internal_catch (Qtop_level, executor_catch_detached, Qnil);
   return Qnil;
 }
 
 void
 start_command_executor (void)
 {
-  Lisp_Object thread
+  command_executor_thread_obj
     = Fmake_thread (Fintern (build_string ("command-executor--run"), Qnil),
 		    build_string ("command-executor"), Qnil);
-  command_executor_thread = XTHREAD (thread);
+}
+
+/* Called from thread_consider_preempt on the executor thread when the
+   foreground command has been running longer than `thread-detach-ms'.
+   Hand the command-loop role to a fresh thread so subsequent input is
+   processed concurrently; this thread finishes its command in the
+   background and then exits via command_executor_exit_if_detached.  */
+
+static void
+command_executor_detach (void)
+{
+  /* We may be at a quit check inside a C primitive whose frames hold
+     raw string-data pointers; if thread creation triggers GC, keep
+     string compaction off (same protocol as preemption parking).  */
+  thread_preempt_parked++;
+  command_executor_thread_obj
+    = Fmake_thread (Fintern (build_string ("command-executor--resume"), Qnil),
+		    build_string ("command-executor"), Qnil);
+  thread_preempt_parked--;
 }
 
 static void
@@ -866,7 +960,7 @@ ui_wait_callback (void *arg)
   /* 30ms redisplay cadence while a command runs; long sleeps while
      the executor waits for input (it redisplays itself then).  */
   sys_cond_timedwait (&ui_wake_cond, &global_lock,
-		      command_executor_busy ? 30 : 500);
+		      command_executor_busy_p () ? 30 : 500);
   post_acquire_global_lock (self);
 }
 
@@ -882,7 +976,7 @@ ui_thread_loop (void)
 	  fputs ("emacs: command-executor thread died; exiting.\n", stderr);
 	  exit (1);
 	}
-      if (command_executor_busy
+      if (command_executor_busy_p ()
 	  && !redisplaying_p
 	  && NILP (Vinhibit_redisplay))
 	redisplay_preserve_echo_area (35);
@@ -908,7 +1002,26 @@ thread_consider_preempt (void)
       || redisplaying_p
       || interrupt_input_blocked > 0)
     return;
-  if (thread_monotonic_ms () - thread_slice_start_ms < thread_slice_ms)
+
+  double now = thread_monotonic_ms ();
+
+  /* Detach-on-slow: if the foreground command has been running longer
+     than `thread-detach-ms', hand the command loop to a fresh
+     executor so the user's subsequent input runs concurrently while
+     this command finishes in the background.  Only from the top-level
+     command loop: a command inside a recursive edit, the minibuffer,
+     or a keyboard macro stays attached (it still preempts and
+     redisplays, but later input waits for it).  */
+  if (thread_detach_commands
+      && current_thread->in_command
+      && current_thread_is_command_executor ()
+      && command_loop_level == 0
+      && minibuf_level == 0
+      && NILP (Vexecuting_kbd_macro)
+      && now - executor_command_start_ms >= thread_detach_ms)
+    command_executor_detach ();
+
+  if (now - thread_slice_start_ms < thread_slice_ms)
     return;
 
   thread_preempt_parked++;
@@ -993,6 +1106,14 @@ run_thread (void *state)
 
   /* It might be nice to do something with errors here.  */
   internal_condition_case (invoke_thread_function, Qt, record_thread_error);
+
+  /* If this thread died mid-command (e.g. an error unwound past the
+     command loop), keep the global busy count balanced.  */
+  if (self->in_command)
+    {
+      self->in_command = false;
+      command_busy_count--;
+    }
 
   update_processes_for_thread_death (Fcurrent_thread ());
 
@@ -1465,6 +1586,7 @@ syms_of_threads (void)
       defsubr (&Sthread_buffer_disposition);
       defsubr (&Sthread_set_buffer_disposition);
       defsubr (&Scommand_executor__run);
+      defsubr (&Scommand_executor__resume);
 
       staticpro (&last_thread_error);
       last_thread_error = Qnil;
@@ -1498,6 +1620,24 @@ A running thread offers the CPU to other threads once it has run this
 long without blocking.  Only used when `thread-preemption' is
 non-nil.  */);
   thread_slice_ms = 15;
+
+  DEFVAR_BOOL ("thread-detach-commands", thread_detach_commands,
+    doc: /* Non-nil means slow commands detach from the command loop.
+When a command has been running longer than `thread-detach-ms', the
+command loop moves to a fresh executor thread so subsequent input is
+processed immediately; the slow command finishes in the background.
+Only top-level commands detach (not those inside recursive edits,
+the minibuffer, or keyboard macros).  */);
+  thread_detach_commands = true;
+
+  DEFVAR_INT ("thread-detach-ms", thread_detach_ms,
+    doc: /* Milliseconds a command may run before it detaches.
+See `thread-detach-commands'.  */);
+  thread_detach_ms = 100;
+
+  DEFSYM (Qcommand_executor_detached, "command-executor-detached");
+  staticpro (&command_executor_thread_obj);
+  command_executor_thread_obj = Qnil;
 
   DEFVAR_LISP ("main-thread", Vmain_thread,
     doc: /* The main thread of Emacs.  */);

@@ -1434,6 +1434,10 @@ command_loop_1 (void)
       /* Tell the UI thread we are idle: while we wait for input,
 	 read_char does the redisplaying.  */
       command_executor_set_busy (false);
+      /* If a slow command detached us, a newer executor owns input
+	 now: unwind out (throws; the thread entry function catches
+	 the tag and the thread exits).  */
+      command_executor_exit_if_detached ();
 #endif
       int i = read_key_sequence (keybuf, Qnil, false, true, true, false,
 				 false);

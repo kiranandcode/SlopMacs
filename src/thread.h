@@ -191,6 +191,18 @@ struct thread_state
   sys_jmp_buf m_getcjmp;
 #define getcjmp (current_thread->m_getcjmp)
 
+  /* True while this thread is executing a command (or its hooks) in
+     command_loop_1.  Maintained via command_executor_set_busy;
+     contributes to the global busy count the UI thread uses to decide
+     whether it must redisplay.  */
+  bool in_command;
+
+  /* True if this thread runs (or ran) the editor command loop, i.e.,
+     it was created as a command executor.  A detached executor keeps
+     this set so it knows to exit once its command finishes (see
+     command_executor_exit_if_detached).  */
+  bool executor_thread;
+
   /* The OS identifier for this thread.  */
   sys_thread_t thread_id;
 
