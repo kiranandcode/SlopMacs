@@ -12561,6 +12561,27 @@ clear_waiting_for_input (void)
    executor is active; defined below, before handle_interrupt.  */
 static int volatile force_quit_count;
 
+/* Set by handle_interrupt_signal once the user has pressed C-g five
+   times in a row without any quit being processed -- the signature of
+   a wedged command executor.  Consumed by the executor at its next
+   quit checkpoint via executor_take_break_request (probably_quit),
+   which then returns it to top level.  */
+static volatile sig_atomic_t executor_break_requested;
+
+/* Called by the command executor at a quit checkpoint.  If a break to
+   top level has been demanded (see executor_break_requested), consume
+   the request, reset the C-g counter, and return true so the caller
+   unwinds to the command loop.  */
+bool
+executor_take_break_request (void)
+{
+  if (! executor_break_requested)
+    return false;
+  executor_break_requested = 0;
+  force_quit_count = 0;
+  return true;
+}
+
 /* The SIGINT handler.
 
    If we have a frame on the controlling tty, we assume that the
@@ -12590,6 +12611,16 @@ handle_interrupt_signal (int sig)
 	  force_quit_count = count;
 	  if (count == 3)
 	    Vinhibit_quit = Qnil;
+	  /* The count only climbs when quits aren't being processed --
+	     i.e. the executor is wedged (an error storm, a runaway
+	     primitive).  Past five rapid C-g's, demand it abandon
+	     everything and return to top level; the executor honors
+	     this at its next quit checkpoint (executor_take_break_request,
+	     consumed in probably_quit).  This is the only way out of a
+	     command loop spinning on a persistent error -- a plain quit
+	     just gets caught and re-signaled.  */
+	  if (count >= 5)
+	    executor_break_requested = 1;
 	  Vquit_flag = Qt;
 	  return;
 	}

@@ -1501,6 +1501,7 @@ thread_all_before_buffer_killed (Lisp_Object current)
   struct buffer *other = NULL;
   struct buffer *b = XBUFFER (current);
   struct thread_state *caller_thread = current_thread;
+  struct thread_state *executor = command_executor_ptr ();
 
   for (iter = all_threads; iter; iter = iter->next_thread)
     {
@@ -1516,7 +1517,18 @@ thread_all_before_buffer_killed (Lisp_Object current)
 	  if (other == NULL)
 	    other = XBUFFER (Fother_buffer (current, Qnil, Qnil));
 
-	  if (!EQ (iter->buffer_disposition, Qsilently))
+	  /* The command executor runs the main command loop; when a
+	     buffer it merely has current is killed by another thread
+	     (an async process filter, a detached background command),
+	     silently switch it to another buffer exactly as stock
+	     Emacs does for the main thread.  Injecting
+	     `thread-buffer-killed' into the command loop turns a
+	     routine buffer kill (LSP stderr/log buffers, temporaries)
+	     into an unrecoverable error storm: cmd_error prints it,
+	     the loop re-runs, the dead-buffer state persists, and
+	     Emacs spins at 100% with no way out.  */
+	  if (iter != executor
+	      && !EQ (iter->buffer_disposition, Qsilently))
 	    thread_set_error (iter, Qthread_buffer_killed, Qnil);
 
 	  iter->m_current_buffer = other;

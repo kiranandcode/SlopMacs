@@ -302,6 +302,73 @@ without that, a fresh instance sat at 80x25, unfocused, cursorless.
 called `frame-geometry` on a web frame; web frames now take that path
 legitimately.
 
+## Executor robustness postmortem (2026-06-14)
+
+A 100%-CPU hang that C-g could not break, traced to the executor
+architecture and fixed in three places.
+
+**Root cause — `thread-buffer-killed` injected into the command loop.**
+`thread_all_before_buffer_killed` (thread.c) sends a
+`thread-buffer-killed` error to *any* non-caller thread holding a
+buffer that is being killed.  In stock Emacs the command loop is the
+main thread, which is never targeted this way; here it is the
+*executor* thread.  LSP (and anything else) constantly creates and
+kills buffers (stderr, `*lsp-log*`, temporaries).  When one the
+executor merely had current was killed by another thread, the
+executor took a `thread-buffer-killed` error *inside the command
+loop* — `cmd_error` printed it, the loop re-ran, the dead-buffer
+state persisted, and Emacs spun forever at 100% with no way out.
+Fix: the executor is now exempted (treated like the main thread —
+silently switch buffers, never take the error).  See
+`thread_all_before_buffer_killed`.
+
+**The hole that made it unrecoverable.** With the executor active,
+`handle_interrupt_signal` only ever set the quit flag and returned —
+it never reached the `Qkill_emacs` path.  So a wedged executor
+swallowed *every* C-g as just another "Quit" to print; no keystroke
+could kill or break it, and only `kill -9` recovered (losing the
+session, since `session-reload-save` can't run on a wedged executor).
+
+**The escape hatch (validated).** After five rapid C-g's with no quit
+being processed — the signature of a wedge — `handle_interrupt_signal`
+sets `executor_break_requested`.  The executor consumes it at its next
+quit checkpoint (`executor_take_break_request`, called from
+`probably_quit`) and `Ftop_level()`s — abandoning the wedged command
+and unwinding to the command loop, *keeping the session alive*.  The
+count only climbs when quits aren't being processed, so normal C-g is
+unaffected.  Tested: an `(while t (condition-case nil (signal 'error
+nil) (error nil)))` timer wedged the executor at 94% CPU; 5× SIGINT
+dropped it to 0% with the editor and the live LSP workspace intact.
+
+Files: `src/thread.c` (exemption), `src/keyboard.c`
+(`executor_break_requested`, `executor_take_break_request`, the count-5
+escalation), `src/eval.c` (`probably_quit` consumes the request and
+throws to top level), `src/lisp.h` (decl).
+
+**Amplifier — `debug-on-error`.** `~/.emacs.d/.custom.el` has
+`'(debug-on-error t)` (set via Customize, almost certainly by
+accident).  On the executor every error then enters the debugger,
+which does its own recursive edit and produces "No recursive edit is
+in progress" loops — turning routine errors into catastrophes.
+Recommend removing it.
+
+## Build note: image libraries (GIF)
+
+The web configure line passed only protobuf's include/lib paths, so
+Homebrew's giflib (keg-only / non-default prefix) was invisible and
+Emacs built **without GIF support** (`image-types` lacked `gif`).
+That broke anything loading a GIF — the dashboard banner *and* LSP
+(its spinner/progress UI), the latter aborting `lsp` outright.  Fix:
+configure with giflib's paths added —
+
+    ./configure --with-web --without-ns \
+      LDFLAGS="-L/opt/homebrew/opt/protobuf@21/lib -L/opt/homebrew/opt/giflib/lib" \
+      CPPFLAGS="-I/opt/homebrew/opt/protobuf@21/include -I/opt/homebrew/opt/giflib/include"
+
+giving `HAVE_GIF 1`.  If other optional image/codec libs ever look
+missing, check whether their Homebrew prefix is on the configure
+include/lib path before assuming the feature is unavailable.
+
 ## Known limitations / future work
 
 (tracked in todos.md)

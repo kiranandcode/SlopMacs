@@ -1885,6 +1885,20 @@ probably_quit (void)
 	process_pending_signals ();
       return;
     }
+
+  /* Escape hatch for a wedged executor: the user mashed C-g (>= 5)
+     because a plain quit keeps getting caught and re-signaled (an
+     error storm in the command loop).  Abandon the current command
+     and unwind to top level.  Safe outside GC; the executor never
+     runs redisplay, so no redisplaying_p guard is needed.  */
+  if (current_thread_is_command_executor ()
+      && !gc_in_progress
+      && executor_take_break_request ())
+    {
+      Vquit_flag = Qnil;
+      Vinhibit_quit = Qnil;
+      Ftop_level ();   /* noreturn: throws to the command loop */
+    }
 #endif
   specpdl_ref gc_count = inhibit_garbage_collection ();
   if (!NILP (Vquit_flag) && NILP (Vinhibit_quit))
