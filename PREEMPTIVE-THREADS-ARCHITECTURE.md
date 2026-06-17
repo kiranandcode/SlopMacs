@@ -441,15 +441,26 @@ behind it, both now fixed:
    executor while the first stays blocked; threads settle back when the
    blocked wait returns; minibuffer + C-g unaffected.
 
-Not covered: a *nested synchronous read* (a minibuffer / `read-char-
-choice` prompt — e.g. lsp-mode's "import project?") can still wedge the
-command loop ("not in the most nested command loop", C-g dead), because
-detach deliberately stays out of recursive edits/minibuffers.  Mitigated
-per-trigger (`lsp-auto-guess-root t` so lsp never pops that prompt); the
-general nested-read case is future work.  Also: a *persistently* hung
-subprocess in a `post-command-hook` makes each command detach a fresh
-background thread (they sleep, but accumulate) — bounding that is future
-work; the editor stays responsive throughout.
+Nested synchronous reads (a minibuffer / `read-char-choice` prompt —
+e.g. lsp-mode's "import project?"): the wedge here is *detach* opening
+a prompt on the background thread.  When a command detaches and then
+reads input, the minibuffer it opens blocks on input the foreground
+executor owns, and the global `minibuf_level`/`command_loop_level` it
+bumps corrupt the foreground loop ("not in the most nested command
+loop", C-g dead).  `read_minibuf` and `recursive_edit_1` now guard
+their entry with `command_executor_exit_if_detached()` — a detached
+background executor abandons (throws `command-executor-detached`)
+before touching global state, so the editor stays responsive and the
+background command is dropped.  Correct by construction; deterministic
+reproduction in synthetic tests proved flaky, so treat end-to-end
+behavior as pending real-world validation.  (Normal foreground
+minibuffer + C-g are unaffected — verified.)  Per-trigger mitigation
+also in place: `lsp-auto-guess-root t` so lsp never pops that prompt.
+
+Also still open: a *persistently* hung subprocess in a
+`post-command-hook` makes each command detach a fresh background thread
+(they sleep, but accumulate) — bounding that is future work; the editor
+stays responsive throughout.
 
 ## Known limitations / future work
 
