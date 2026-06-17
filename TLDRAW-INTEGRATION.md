@@ -101,16 +101,22 @@ group when several are selected (`S-arrows` = larger step;
 in/out**, `0` reset, `.` center; `C-/` undo, `C-?` redo; `u` toggle UI;
 `m` toggle mouse; `C-g` clear anchor. A freshly created node is centered.
 
-### Visual box-selection (`v`)
+### Visual selection — box (`v`) and path (`V`)
 
-`v` enters `web-tldraw-visual-mode` at the current node (the anchor).
-The movement keys then move a *cursor* node and grow a rectangle from
-the anchor to it; every node whose centre is inside is selected, and the
-count shows in the mode line (`[visual N]`). The geometry is computed
-client-side (`selectBox`/`visual-move` in navigation.js). `RET` keeps
-the selection, `d` deletes it, `C-g`/`q` cancels. The resulting
-multi-selection is usable by the normal commands — `d` deletes all,
-the arrow keys move the whole group together.
+`web-tldraw-visual-mode` selects multiple nodes by moving. Two styles
+(mode line shows `[box N]` / `[path N]`):
+
+- **`v` (box)** — anchor at the current node; movement moves a *cursor*
+  node and grows a rectangle from anchor to cursor; every node whose
+  centre is inside is selected.
+- **`V` (path)** — each node you move onto is *added* to the selection
+  (a freeform set, not a rectangle), so you trace a path through the
+  graph.
+
+`RET` keeps the selection, `d` deletes it, `C-g`/`q` cancels. Geometry
+is client-side (`selectBox` / the `visual-start|move|end` verbs, keyed
+by `style`). The resulting multi-selection is usable by the normal
+commands — `d` deletes all, the arrow keys move the whole group.
 
 The in-node edit buffer is Git-commit/magit-style: type the node text at
 the top, an informational comment block (keybindings + board/node

@@ -90,7 +90,10 @@ back with the epoch they descend from, so stale echoes are ignored.")
 (defvar-local web-tldraw--edge-anchor nil
   "Shape id marked as the start of an edge being drawn, or nil.")
 (defvar-local web-tldraw--region-count 0
-  "Number of nodes in the current box selection (for the mode line).")
+  "Number of nodes in the current visual selection (for the mode line).")
+(defvar-local web-tldraw--visual-style 'box
+  "Style of the active visual selection: `box' (rectangle) or `path'
+\(accumulate each node moved onto).")
 (defvar-local web-tldraw--mouse nil
   "Non-nil when direct mouse interaction is enabled on this board.")
 (defvar-local web-tldraw--ready nil
@@ -309,6 +312,7 @@ trigger a re-load, so there is no echo loop."
   "RET"   #'web-tldraw-ret
   "C-SPC" #'web-tldraw-edge-mark
   "v"     #'web-tldraw-visual
+  "V"     #'web-tldraw-visual-path
   "C-g"   #'web-tldraw-quit
   "C-l"   #'web-tldraw-recenter
   "M-l"   #'web-tldraw-recenter
@@ -349,7 +353,7 @@ trigger a re-load, so there is no echo loop."
   (concat
    (if (bound-and-true-p web-tldraw--mouse) " [mouse]" " [kbd]")
    (when (bound-and-true-p web-tldraw-visual-mode)
-     (format " [visual %d]" web-tldraw--region-count))
+     (format " [%s %d]" web-tldraw--visual-style web-tldraw--region-count))
    (when web-tldraw--edge-anchor " [edge]")
    (when (and (stringp web-tldraw--selection-text)
               (not (string-empty-p web-tldraw--selection-text)))
@@ -561,15 +565,27 @@ cancels.  With a multi-selection the move keys (in normal mode) shift the
 whole group."
   :lighter nil
   (if web-tldraw-visual-mode
-      (web-tldraw--cmd "visual-start")
+      (web-tldraw--cmd "visual-start"
+                       (list :style (symbol-name web-tldraw--visual-style)))
     (web-tldraw--cmd "visual-end"))
   (force-mode-line-update))
 
 (defun web-tldraw-visual ()
-  "Enter visual box-selection mode at the current node."
+  "Enter visual BOX-selection mode at the current node.
+Movement grows a rectangle; every node inside it is selected."
   (interactive)
+  (setq-local web-tldraw--visual-style 'box)
   (web-tldraw-visual-mode 1)
-  (message "tldraw: visual select — move to grow, RET keep, d delete, C-g cancel"))
+  (message "tldraw: box-select — move to grow, RET keep, d delete, C-g cancel"))
+
+(defun web-tldraw-visual-path ()
+  "Enter visual PATH-selection mode at the current node.
+Each node you move onto is added to the selection (a freeform set,
+rather than a rectangle)."
+  (interactive)
+  (setq-local web-tldraw--visual-style 'path)
+  (web-tldraw-visual-mode 1)
+  (message "tldraw: path-select — move to add nodes, RET keep, d delete, C-g cancel"))
 
 (defun web-tldraw-visual-down ()  (interactive) (web-tldraw--cmd "visual-move" '(:dir "down")))
 (defun web-tldraw-visual-up ()    (interactive) (web-tldraw--cmd "visual-move" '(:dir "up")))

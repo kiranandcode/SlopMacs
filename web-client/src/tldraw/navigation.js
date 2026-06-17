@@ -187,7 +187,10 @@ export function applyCommand (editor, verb, args, ctx) {
         || ((editor.getCurrentPageShapesSorted
              ? editor.getCurrentPageShapesSorted()
              : editor.getCurrentPageShapes())[0] || {}).id;
-      editor._slopVisual = id ? { anchor: id, cursor: id } : null;
+      const style = args.style === 'path' ? 'path' : 'box';
+      editor._slopVisual = id
+        ? { anchor: id, cursor: id, style, members: new Set(id ? [id] : []) }
+        : null;
       if (id) editor.setSelectedShapes([id]);
       ctx.send({ type: 'tldraw_event', board: ctx.boardId, event: 'region',
                  count: id ? 1 : 0 });
@@ -201,7 +204,15 @@ export function applyCommand (editor, verb, args, ctx) {
         v.cursor = next;
         const b = editor.getShapePageBounds(next);
         if (b) editor.centerOnPoint(boundsCenter(b), { animation: { duration: 120 } });
-        selectBox(editor, v.anchor, v.cursor, ctx);
+        if (v.style === 'path') {
+          /* Accumulate each node moved onto.  */
+          v.members.add(next);
+          editor.setSelectedShapes([...v.members]);
+          ctx.send({ type: 'tldraw_event', board: ctx.boardId, event: 'region',
+                     count: v.members.size });
+        } else {
+          selectBox(editor, v.anchor, v.cursor, ctx);
+        }
       }
       break;
     }

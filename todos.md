@@ -107,3 +107,8 @@ things I want to fix:
       mode line); RET keeps, d deletes, C-g cancels.  Multi-selection
       moves as a group via the nudge keys.  Geometry client-side
       (selectBox/visual-move in navigation.js).
+- [x] Path-style visual selection (2026-06-17): `V` enters
+      web-tldraw-visual-mode with style=path — each node moved onto is
+      added to the selection (freeform set), vs `v`'s rectangle.  Shared
+      visual-start/move verbs branch on the style; mode line shows
+      [box N] / [path N].
