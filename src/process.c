@@ -5401,6 +5401,14 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
       else if (pending_signals)
 	process_pending_signals ();
 
+      /* If the foreground command executor has been blocked here past
+	 the detach deadline, detach so a fresh executor takes input.
+	 Checked every iteration (the wait above is clamped to the
+	 deadline for this thread) -- unlike the rate-limited
+	 maybe_quit/thread_consider_preempt path, which fires too rarely
+	 during a blocking wait to keep the editor responsive.  */
+      thread_consider_detach ();
+
       /* Exit now if the cell we're waiting for became non-nil.  */
       if (! NILP (wait_for_cell) && ! NILP (XCAR (wait_for_cell)))
 	break;
@@ -5475,6 +5483,24 @@ wait_reading_process_output (intmax_t time_limit, int nsecs, int read_kbd,
 	}
       else
 	timeout = make_timespec (wait < TIMEOUT ? 0 : 100000, 0);
+
+      /* Never let the foreground command executor sleep here past the
+	 detach deadline: clamp the wait so the loop revisits maybe_quit
+	 (above) and detach-on-slow can hand input to a fresh executor.
+	 Without this a blocking wait (a slow/silent subprocess, a
+	 post-command-hook spell-checker) freezes the whole command loop.
+	 Returns -1 (no clamp) for non-executor and already-detached
+	 background threads, so those still sleep efficiently.  */
+      {
+	int cap_ms = thread_executor_wait_cap_ms ();
+	if (cap_ms >= 0)
+	  {
+	    struct timespec cap = make_timespec (cap_ms / 1000,
+						 (cap_ms % 1000) * 1000000);
+	    if (timespec_cmp (cap, timeout) < 0)
+	      timeout = cap;
+	  }
+      }
 
       /* Normally we run timers here.
 	 But not if wait_for_cell; in those cases,

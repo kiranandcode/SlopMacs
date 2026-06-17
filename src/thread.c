@@ -822,6 +822,12 @@ static int command_busy_count;
    started; detach-on-slow triggers off this.  */
 static double executor_command_start_ms;
 
+/* The command_loop_level at which the current command executor runs its
+   top-level command loop (0 for the initial executor, 1 for a resume
+   executor; see executor_recursive_edit).  Detach and the blocking-wait
+   clamp treat this level as "top level".  */
+static EMACS_INT executor_base_loop_level;
+
 static struct thread_state *
 command_executor_ptr (void)
 {
@@ -887,6 +893,16 @@ command_executor_exit_if_detached (void)
 static Lisp_Object
 executor_recursive_edit (Lisp_Object ignore)
 {
+  /* recursive_edit_1 (inside Frecursive_edit) bumps command_loop_level
+     by one; that bumped value is this executor's top-level baseline.
+     The initial executor lands at 0, but a *resume* executor enters one
+     level deeper -- the detaching thread it replaces has not unwound
+     command_loop_level yet -- so it would sit at 1.  Detach and the
+     blocking-wait clamp compare against this baseline instead of a
+     hard-coded 0, otherwise they never fire on a resume executor and
+     detach-on-slow silently dies after the very first detach (which is
+     exactly why slow/blocking commands kept freezing the editor).  */
+  executor_base_loop_level = command_loop_level + 1;
   return Frecursive_edit ();
 }
 
@@ -984,6 +1000,39 @@ ui_thread_loop (void)
     }
 }
 
+/* Detach-on-slow: if the foreground command has been running longer
+   than `thread-detach-ms', hand the command loop to a fresh executor
+   so the user's subsequent input runs concurrently while this command
+   finishes in the background.  Only from the top-level command loop: a
+   command inside a recursive edit, the minibuffer, or a keyboard macro
+   stays attached (it still preempts and redisplays, but later input
+   waits for it).
+
+   Called both from thread_consider_preempt (CPU-bound commands, via
+   maybe_quit) and directly from wait_reading_process_output each loop
+   iteration (blocking commands -- a slow subprocess, a
+   post-command-hook spell-checker) so a command blocked in I/O detaches
+   on the same deadline and never freezes the editor.  Self-gates, so it
+   is cheap to call on non-executor threads.  */
+void
+thread_consider_detach (void)
+{
+  if (!NILP (Vinhibit_quit)
+      || gc_in_progress
+      || redisplaying_p
+      || interrupt_input_blocked > 0)
+    return;
+
+  if (thread_detach_commands
+      && current_thread->in_command
+      && current_thread_is_command_executor ()
+      && command_loop_level == executor_base_loop_level
+      && minibuf_level == 0
+      && NILP (Vexecuting_kbd_macro)
+      && thread_monotonic_ms () - executor_command_start_ms >= thread_detach_ms)
+    command_executor_detach ();
+}
+
 /* Called from maybe_quit (every 64th invocation; see lisp.h).
    Yield the global lock if the current thread's time slice has
    expired and it is safe to do so.  */
@@ -1005,21 +1054,7 @@ thread_consider_preempt (void)
 
   double now = thread_monotonic_ms ();
 
-  /* Detach-on-slow: if the foreground command has been running longer
-     than `thread-detach-ms', hand the command loop to a fresh
-     executor so the user's subsequent input runs concurrently while
-     this command finishes in the background.  Only from the top-level
-     command loop: a command inside a recursive edit, the minibuffer,
-     or a keyboard macro stays attached (it still preempts and
-     redisplays, but later input waits for it).  */
-  if (thread_detach_commands
-      && current_thread->in_command
-      && current_thread_is_command_executor ()
-      && command_loop_level == 0
-      && minibuf_level == 0
-      && NILP (Vexecuting_kbd_macro)
-      && now - executor_command_start_ms >= thread_detach_ms)
-    command_executor_detach ();
+  thread_consider_detach ();
 
   if (now - thread_slice_start_ms < thread_slice_ms)
     return;
@@ -1027,6 +1062,31 @@ thread_consider_preempt (void)
   thread_preempt_parked++;
   flush_stack_call_func (yield_callback, NULL);
   thread_preempt_parked--;
+}
+
+/* Maximum time (ms) the current thread should block in a single wait,
+   or -1 for no cap.  When the foreground command executor is running a
+   top-level command, a blocking wait (accept-process-output, a slow
+   synchronous subprocess, a post-command-hook spell-checker) must not
+   sleep past the detach deadline: wait_reading_process_output clamps
+   its select timeout to this so it keeps revisiting the maybe_quit /
+   detach-on-slow checkpoint at the top of its loop.  Detach then hands
+   input to a fresh executor while the wait finishes in the background.
+   Returns -1 for non-executor threads and for already-detached
+   background threads (current_thread_is_command_executor is false for
+   them), so those sleep efficiently instead of polling.  This is what
+   keeps a blocking subprocess from freezing the whole editor.  */
+int
+thread_executor_wait_cap_ms (void)
+{
+  if (thread_detach_commands
+      && current_thread->in_command
+      && current_thread_is_command_executor ()
+      && command_loop_level == executor_base_loop_level
+      && minibuf_level == 0
+      && NILP (Vexecuting_kbd_macro))
+    return thread_detach_ms > 3600000 ? 3600000 : (int) thread_detach_ms;
+  return -1;
 }
 
 static Lisp_Object

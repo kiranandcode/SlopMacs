@@ -3892,6 +3892,8 @@ extern bool command_executor_active_p (void);
 extern bool current_thread_is_command_executor (void);
 extern void command_executor_set_busy (bool);
 extern bool executor_take_break_request (void);
+extern int thread_executor_wait_cap_ms (void);
+extern void thread_consider_detach (void);
 extern void command_executor_exit_if_detached (void);
 extern void start_command_executor (void);
 extern void ui_thread_loop (void);

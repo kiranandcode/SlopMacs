@@ -406,6 +406,51 @@ giving `HAVE_GIF 1`.  If other optional image/codec libs ever look
 missing, check whether their Homebrew prefix is on the configure
 include/lib path before assuming the feature is unavailable.
 
+## Blocking-wait postmortem (2026-06-17)
+
+A `flyspell` `post-command-hook` calling a silent `ispell` froze the
+editor at **0% CPU** — a *blocking* wait, not a spin.  Two real bugs
+behind it, both now fixed:
+
+1. **Detach was silently dead.**  Detach-on-slow only fires when
+   `command_loop_level == 0`, but the *resume* executor (spawned by the
+   first-ever detach) enters `Frecursive_edit` while the detaching
+   thread hasn't unwound `command_loop_level` yet, so it runs at level
+   **1**.  After the very first detach the condition never matched
+   again — every later slow/blocking command froze the editor.  Fix:
+   `executor_recursive_edit` records `executor_base_loop_level`
+   (`command_loop_level + 1`); detach and the wait clamp compare against
+   that baseline, not a hard-coded 0.
+
+2. **Blocking waits never reached the detach checkpoint.**  The detach
+   check lives in `thread_consider_preempt`, reached via `maybe_quit`
+   — which a thread asleep in `pselect` doesn't call.
+   `wait_reading_process_output` now (a) clamps the *foreground*
+   executor's select timeout to `thread-detach-ms`
+   (`thread_executor_wait_cap_ms`), so it revisits its loop-top
+   checkpoint every ~100 ms, and (b) calls a dedicated,
+   non-rate-limited `thread_consider_detach()` each iteration.  A
+   command blocked in I/O now detaches on the same deadline as a
+   CPU-bound one: a fresh executor takes input, the blocked command
+   finishes in the background.  Already-detached background threads
+   aren't clamped (`thread_executor_wait_cap_ms` returns -1 for them),
+   so they sleep efficiently at 0% CPU instead of polling.
+
+   Verified: a command blocked in `accept-process-output` on a silent
+   subprocess detaches in ~100 ms; a second command runs on the fresh
+   executor while the first stays blocked; threads settle back when the
+   blocked wait returns; minibuffer + C-g unaffected.
+
+Not covered: a *nested synchronous read* (a minibuffer / `read-char-
+choice` prompt — e.g. lsp-mode's "import project?") can still wedge the
+command loop ("not in the most nested command loop", C-g dead), because
+detach deliberately stays out of recursive edits/minibuffers.  Mitigated
+per-trigger (`lsp-auto-guess-root t` so lsp never pops that prompt); the
+general nested-read case is future work.  Also: a *persistently* hung
+subprocess in a `post-command-hook` makes each command detach a fresh
+background thread (they sleep, but accumulate) — bounding that is future
+work; the editor stays responsive throughout.
+
 ## Known limitations / future work
 
 (tracked in todos.md)
