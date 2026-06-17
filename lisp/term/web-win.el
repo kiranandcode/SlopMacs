@@ -178,17 +178,27 @@ CODE through `web-eval-javascript'."
       (setq web--selections (assq-delete-all selection web--selections))
     (setf (alist-get selection web--selections) value)
     (when (and (eq selection 'CLIPBOARD) (fboundp 'web-set-clipboard))
-      (web-set-clipboard value))))
+      (web-set-clipboard value)
+      ;; Reflect our own copy into web-clipboard-text immediately, so a
+      ;; following yank sees it without waiting for a focus round-trip.
+      (when (boundp 'web-clipboard-text)
+        (setq web-clipboard-text value)))))
 
 (cl-defmethod gui-backend-get-selection (selection-symbol target-type
                                          &context (window-system web))
   (cond
    ((eq target-type 'TARGETS) (vector 'TARGETS 'STRING))
    ((eq target-type 'TIMESTAMP) 0)
-   (t (or (alist-get selection-symbol web--selections)
-          (and (eq selection-symbol 'CLIPBOARD)
-               (stringp (bound-and-true-p web-clipboard-text))
-               web-clipboard-text)))))
+   ;; CLIPBOARD: web-clipboard-text is the OS clipboard, kept current by
+   ;; the client syncing it on window focus (so copies made in other
+   ;; apps win over a stale local selection).  Fall back to our own last
+   ;; copy only if nothing has been synced yet.
+   ((eq selection-symbol 'CLIPBOARD)
+    (or (and (stringp (bound-and-true-p web-clipboard-text))
+             (> (length web-clipboard-text) 0)
+             web-clipboard-text)
+        (alist-get 'CLIPBOARD web--selections)))
+   (t (alist-get selection-symbol web--selections))))
 
 (cl-defmethod gui-backend-selection-owner-p (selection
                                              &context (window-system web))

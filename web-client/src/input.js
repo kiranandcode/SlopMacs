@@ -340,10 +340,28 @@ export class InputHandler {
   _setupFocus () {
     this._on(window, 'focus', () => {
       this._send({ type: 'focus', gained: true });
+      this._syncClipboardIn();
     });
     this._on(window, 'blur', () => {
       this._send({ type: 'focus', gained: false });
     });
+    /* Sync once on startup too, so the OS clipboard is available to the
+       first yank without needing a focus transition.  */
+    this._syncClipboardIn();
+  }
+
+  /* Pull the OS clipboard into Emacs (sets web-clipboard-text) so C-y
+     yanks text copied in other apps while Emacs was unfocused.  Uses the
+     Electron main process; no-op in a plain browser.  */
+  async _syncClipboardIn () {
+    const read = window.electronAPI?.readClipboard;
+    if (!read) return;
+    try {
+      const text = await read();
+      if (typeof text === 'string' && text.length > 0) {
+        this._send({ type: 'clipboard', dir: 'paste', text });
+      }
+    } catch { /* ignore */ }
   }
 
   destroy () {

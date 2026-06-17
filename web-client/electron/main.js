@@ -273,6 +273,10 @@ ipcMain.handle('clipboard-write', (_event, text) => {
   clipboard.writeText(String(text ?? ''));
 });
 
+/* Renderer reads the OS clipboard (on focus) to sync it into Emacs for
+   yank.  Main-process access needs no focus or gesture.  */
+ipcMain.handle('clipboard-read', () => clipboard.readText());
+
 async function main () {
   openLog();
   const emacsRoot = resolveEmacsRoot();
