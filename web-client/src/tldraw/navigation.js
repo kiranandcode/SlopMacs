@@ -46,11 +46,12 @@ function shapeText (shape) {
   return '';
 }
 
-/* Pick the nearest shape in a cardinal direction from the selection.  */
-function pickDirectional (editor, dir) {
+/* Pick the nearest shape in a cardinal direction from FROMID (default
+   the current selection).  */
+function pickDirectional (editor, dir, fromId) {
   const shapes = editor.getCurrentPageShapes();
   if (!shapes.length) return null;
-  const selId = currentId(editor);
+  const selId = fromId || currentId(editor);
   const cur = selId ? editor.getShapePageBounds(selId) : null;
   if (!cur) return shapes[0].id;
   const c = boundsCenter(cur);
@@ -122,6 +123,28 @@ function recenter (editor, pos, id) {
   editor.centerOnPoint({ x: c.x, y: ty }, { animation: { duration: 200 } });
 }
 
+/* Select every node whose centre lies in the rectangle spanning the
+   anchor and cursor shapes (the keyboard "rubber band").  Arrows are
+   excluded — you select nodes, edges follow.  Returns the count.  */
+function selectBox (editor, anchorId, cursorId, ctx) {
+  const a = editor.getShapePageBounds(anchorId);
+  const c = editor.getShapePageBounds(cursorId);
+  if (!a || !c) return 0;
+  const x0 = Math.min(a.x, c.x), y0 = Math.min(a.y, c.y);
+  const x1 = Math.max(a.x + a.w, c.x + c.w), y1 = Math.max(a.y + a.h, c.y + c.h);
+  const inside = editor.getCurrentPageShapes().filter(s => {
+    if (s.type === 'arrow') return false;
+    const b = editor.getShapePageBounds(s.id);
+    if (!b) return false;
+    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    return cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1;
+  }).map(s => s.id);
+  editor.setSelectedShapes(inside);
+  ctx.send({ type: 'tldraw_event', board: ctx.boardId, event: 'region',
+             count: inside.length });
+  return inside.length;
+}
+
 /* ---- arrow / edge support ---- */
 
 function createEdge (editor, fromId, toId) {
@@ -158,6 +181,34 @@ export function applyCommand (editor, verb, args, ctx) {
       break;
     case 'focus-seq':
       focusShape(editor, pickSequential(editor, args.dir), ctx);
+      break;
+    case 'visual-start': {
+      const id = currentId(editor)
+        || ((editor.getCurrentPageShapesSorted
+             ? editor.getCurrentPageShapesSorted()
+             : editor.getCurrentPageShapes())[0] || {}).id;
+      editor._slopVisual = id ? { anchor: id, cursor: id } : null;
+      if (id) editor.setSelectedShapes([id]);
+      ctx.send({ type: 'tldraw_event', board: ctx.boardId, event: 'region',
+                 count: id ? 1 : 0 });
+      break;
+    }
+    case 'visual-move': {
+      const v = editor._slopVisual;
+      if (!v) break;
+      const next = pickDirectional(editor, args.dir, v.cursor);
+      if (next) {
+        v.cursor = next;
+        const b = editor.getShapePageBounds(next);
+        if (b) editor.centerOnPoint(boundsCenter(b), { animation: { duration: 120 } });
+        selectBox(editor, v.anchor, v.cursor, ctx);
+      }
+      break;
+    }
+    case 'visual-end':
+      editor._slopVisual = null;
+      ctx.send({ type: 'tldraw_event', board: ctx.boardId, event: 'region',
+                 count: editor.getSelectedShapeIds().length });
       break;
     case 'focus-first': {
       const shapes = editor.getCurrentPageShapesSorted
@@ -257,6 +308,18 @@ export function applyCommand (editor, verb, args, ctx) {
       recenter(editor, args.pos || 'center', args.id);
       break;
     case 'nudge-shape': {
+      /* With several shapes selected, move them all together.  */
+      const sel = editor.getSelectedShapeIds();
+      if (sel.length > 1 && !args.id) {
+        editor.run(() => sel.forEach(sid => {
+          const s = editor.getShape(sid);
+          if (s && s.type !== 'arrow') {
+            editor.updateShape({ id: sid, type: s.type,
+                                 x: s.x + (args.dx || 0), y: s.y + (args.dy || 0) });
+          }
+        }));
+        break;
+      }
       const id = args.id || currentId(editor);
       const shape = id ? editor.getShape(id) : null;
       if (!shape) break;

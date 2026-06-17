@@ -89,6 +89,8 @@ back with the epoch they descend from, so stale echoes are ignored.")
   "Cycle counter for `web-tldraw-recenter' (like `recenter-top-bottom').")
 (defvar-local web-tldraw--edge-anchor nil
   "Shape id marked as the start of an edge being drawn, or nil.")
+(defvar-local web-tldraw--region-count 0
+  "Number of nodes in the current box selection (for the mode line).")
 (defvar-local web-tldraw--mouse nil
   "Non-nil when direct mouse interaction is enabled on this board.")
 (defvar-local web-tldraw--ready nil
@@ -276,6 +278,9 @@ trigger a re-load, so there is no echo loop."
           ("created"
            (setq web-tldraw--selection (alist-get 'id msg)
                  web-tldraw--selection-meta (alist-get 'meta msg)))
+          ("region"
+           (setq web-tldraw--region-count (or (alist-get 'count msg) 0))
+           (force-mode-line-update))
           ("edit-begin" (web-tldraw--open-node-editor msg))
           ("edit-end" (setq web-tldraw--selection (alist-get 'id msg))))))))
 
@@ -303,6 +308,7 @@ trigger a re-load, so there is no echo loop."
   "<backtab>" #'web-tldraw-focus-prev
   "RET"   #'web-tldraw-ret
   "C-SPC" #'web-tldraw-edge-mark
+  "v"     #'web-tldraw-visual
   "C-g"   #'web-tldraw-quit
   "C-l"   #'web-tldraw-recenter
   "M-l"   #'web-tldraw-recenter
@@ -342,6 +348,8 @@ trigger a re-load, so there is no echo loop."
   "Mode-line tail for a tldraw board: input mode, edge state, selection."
   (concat
    (if (bound-and-true-p web-tldraw--mouse) " [mouse]" " [kbd]")
+   (when (bound-and-true-p web-tldraw-visual-mode)
+     (format " [visual %d]" web-tldraw--region-count))
    (when web-tldraw--edge-anchor " [edge]")
    (when (and (stringp web-tldraw--selection-text)
               (not (string-empty-p web-tldraw--selection-text)))
@@ -524,6 +532,68 @@ With an edge anchor set, draw an edge to the selection; otherwise run
         (force-mode-line-update)
         (message "tldraw: edge drawn"))
     (message "tldraw: need an anchor and a different target node")))
+
+;;;; Visual box-selection mode
+
+(defvar tldraw-visual-mode-map (make-sparse-keymap)
+  "Keymap active in `web-tldraw-visual-mode'.")
+(define-keymap :keymap tldraw-visual-mode-map
+  "C-n" #'web-tldraw-visual-down   "n" #'web-tldraw-visual-down
+  "C-p" #'web-tldraw-visual-up     "p" #'web-tldraw-visual-up
+  "C-f" #'web-tldraw-visual-right  "f" #'web-tldraw-visual-right
+  "C-b" #'web-tldraw-visual-left   "b" #'web-tldraw-visual-left
+  "<down>"  #'web-tldraw-visual-down
+  "<up>"    #'web-tldraw-visual-up
+  "<right>" #'web-tldraw-visual-right
+  "<left>"  #'web-tldraw-visual-left
+  "RET" #'web-tldraw-visual-accept
+  "d"   #'web-tldraw-visual-delete
+  "C-g" #'web-tldraw-visual-cancel
+  "q"   #'web-tldraw-visual-cancel)
+
+(define-minor-mode web-tldraw-visual-mode
+  "Keyboard box-selection mode for a tldraw board.
+Entered at a node (the anchor); the movement keys grow a rectangle to a
+cursor node and select every node inside it (the count shows in the mode
+line).  \\<tldraw-visual-mode-map>\\[web-tldraw-visual-accept] keeps the
+selection, \\[web-tldraw-visual-delete] deletes it, \\[web-tldraw-visual-cancel]
+cancels.  With a multi-selection the move keys (in normal mode) shift the
+whole group."
+  :lighter nil
+  (if web-tldraw-visual-mode
+      (web-tldraw--cmd "visual-start")
+    (web-tldraw--cmd "visual-end"))
+  (force-mode-line-update))
+
+(defun web-tldraw-visual ()
+  "Enter visual box-selection mode at the current node."
+  (interactive)
+  (web-tldraw-visual-mode 1)
+  (message "tldraw: visual select — move to grow, RET keep, d delete, C-g cancel"))
+
+(defun web-tldraw-visual-down ()  (interactive) (web-tldraw--cmd "visual-move" '(:dir "down")))
+(defun web-tldraw-visual-up ()    (interactive) (web-tldraw--cmd "visual-move" '(:dir "up")))
+(defun web-tldraw-visual-left ()  (interactive) (web-tldraw--cmd "visual-move" '(:dir "left")))
+(defun web-tldraw-visual-right () (interactive) (web-tldraw--cmd "visual-move" '(:dir "right")))
+
+(defun web-tldraw-visual-accept ()
+  "Exit visual mode, keeping the box selection."
+  (interactive)
+  (web-tldraw-visual-mode -1)
+  (message "tldraw: %d node(s) selected" web-tldraw--region-count))
+
+(defun web-tldraw-visual-delete ()
+  "Delete the box selection and exit visual mode."
+  (interactive)
+  (web-tldraw--cmd "delete")
+  (web-tldraw-visual-mode -1))
+
+(defun web-tldraw-visual-cancel ()
+  "Clear the box selection and exit visual mode."
+  (interactive)
+  (web-tldraw--cmd "select" (list :ids []))
+  (web-tldraw-visual-mode -1)
+  (message "tldraw: selection cleared"))
 
 ;;;; In-node editing (Emacs-routed)
 

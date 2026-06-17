@@ -93,12 +93,24 @@ Keys in `tldraw-mode`: `C-n/C-p/C-b/C-f` (or `n/p/b/f`) directional
 focus; `C-M-n/C-M-p` / `TAB`/`S-TAB` cycle nodes; `C-l`/`M-l` recenter
 the node (cycles center/top/bottom, like `recenter-top-bottom`); `RET`
 run the node's action (else edit it; else commit an edge if an anchor is
-set); `C-SPC` set edge anchor; `e` edit node; `a`/`t` add node/text; `d`
-delete; `<`/`>` bend arrow; **arrow keys (or `M-arrows`) move the
-selected node** (`S-arrows` = larger step; `web-tldraw-nudge-step` /
-`-big-step`); `=` zoom-fit, `+`/`-` **zoom in/out**, `0` reset, `.`
-center; `C-/` undo, `C-?` redo; `u` toggle UI; `m` toggle mouse; `C-g`
-clear anchor. A freshly created node is centered in view.
+set); `C-SPC` set edge anchor; `v` **visual box-select** (see below);
+`e` edit node; `a`/`t` add node/text; `d` delete; `<`/`>` bend arrow;
+**arrow keys (or `M-arrows`) move the selected node** — or the whole
+group when several are selected (`S-arrows` = larger step;
+`web-tldraw-nudge-step` / `-big-step`); `=` zoom-fit, `+`/`-` **zoom
+in/out**, `0` reset, `.` center; `C-/` undo, `C-?` redo; `u` toggle UI;
+`m` toggle mouse; `C-g` clear anchor. A freshly created node is centered.
+
+### Visual box-selection (`v`)
+
+`v` enters `web-tldraw-visual-mode` at the current node (the anchor).
+The movement keys then move a *cursor* node and grow a rectangle from
+the anchor to it; every node whose centre is inside is selected, and the
+count shows in the mode line (`[visual N]`). The geometry is computed
+client-side (`selectBox`/`visual-move` in navigation.js). `RET` keeps
+the selection, `d` deletes it, `C-g`/`q` cancels. The resulting
+multi-selection is usable by the normal commands — `d` deletes all,
+the arrow keys move the whole group together.
 
 The in-node edit buffer is Git-commit/magit-style: type the node text at
 the top, an informational comment block (keybindings + board/node

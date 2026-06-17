@@ -101,3 +101,9 @@ things I want to fix:
       orientation (spytial returns only a feasible subset); a proper
       ring layout needs honouring spytial's `cyclic` constraint in the
       client positioner (currently only reads Top/Left constraints).
+- [x] Keyboard visual box-selection (2026-06-17): `v` enters
+      web-tldraw-visual-mode at an anchor node; movement grows a
+      rectangle to a cursor node and auto-selects nodes inside (count in
+      mode line); RET keeps, d deletes, C-g cancels.  Multi-selection
+      moves as a group via the nudge keys.  Geometry client-side
+      (selectBox/visual-move in navigation.js).
