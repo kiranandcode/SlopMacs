@@ -39,6 +39,22 @@ export class FrameState {
 
   dispatch (msg) {
     switch (msg.type) {
+      case 'clipboard':
+        /* Emacs copied (M-w / C-w) -> write the OS clipboard.  Only the
+           'copy' direction arrives here; 'paste' flows the other way
+           (browser paste event -> Emacs).  Prefer the Electron main
+           process (no focus/gesture requirement); fall back to the
+           renderer Clipboard API, which only works when the window is
+           focused.  */
+        if (msg.dir === 'copy' && typeof msg.text === 'string') {
+          if (window.electronAPI?.writeClipboard) {
+            Promise.resolve(window.electronAPI.writeClipboard(msg.text))
+              .catch(() => {});
+          } else if (navigator.clipboard?.writeText) {
+            navigator.clipboard.writeText(msg.text).catch(() => {});
+          }
+        }
+        break;
       case 'frame_update':
         this._applyFrameUpdate(msg);
         break;

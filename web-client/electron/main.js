@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, dialog, nativeImage } from 'electron';
+import { app, BrowserWindow, Menu, dialog, nativeImage, ipcMain, clipboard } from 'electron';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
@@ -265,6 +265,13 @@ function createWindow (port) {
     mainWindow = null;
   });
 }
+
+/* Renderer asks the main process to write the OS clipboard (Emacs M-w
+   /C-w via web-set-clipboard).  Main-process clipboard access needs no
+   focus or user gesture, unlike navigator.clipboard in the renderer.  */
+ipcMain.handle('clipboard-write', (_event, text) => {
+  clipboard.writeText(String(text ?? ''));
+});
 
 async function main () {
   openLog();

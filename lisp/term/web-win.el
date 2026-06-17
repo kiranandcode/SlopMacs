@@ -156,6 +156,51 @@ CODE through `web-eval-javascript'."
              (display-graphic-p))
     (web-eval-javascript code)))
 
+;;; Selection / system clipboard.
+;;
+;; The web frame is a window-system frame, so `interprogram-cut-function'
+;; is `gui-select-text', which dispatches to these gui-backend methods.
+;; Without them M-w / C-w reached only the kill ring -- the browser (and
+;; thus the OS clipboard) never saw the text.  Only CLIPBOARD is mirrored
+;; to the browser via `web-set-clipboard'; PRIMARY stays inside Emacs, so
+;; `select-active-regions' doesn't clobber the system clipboard on every
+;; selection change (the browser/macOS has no PRIMARY anyway).  The
+;; browser pushes the OS clipboard back on paste, landing in
+;; `web-clipboard-text', which feeds get-selection so yank picks up
+;; external copies.
+
+(defvar web--selections nil
+  "Alist of (SELECTION . STRING) the web backend currently owns.")
+
+(cl-defmethod gui-backend-set-selection (selection value
+                                         &context (window-system web))
+  (if (null value)
+      (setq web--selections (assq-delete-all selection web--selections))
+    (setf (alist-get selection web--selections) value)
+    (when (and (eq selection 'CLIPBOARD) (fboundp 'web-set-clipboard))
+      (web-set-clipboard value))))
+
+(cl-defmethod gui-backend-get-selection (selection-symbol target-type
+                                         &context (window-system web))
+  (cond
+   ((eq target-type 'TARGETS) (vector 'TARGETS 'STRING))
+   ((eq target-type 'TIMESTAMP) 0)
+   (t (or (alist-get selection-symbol web--selections)
+          (and (eq selection-symbol 'CLIPBOARD)
+               (stringp (bound-and-true-p web-clipboard-text))
+               web-clipboard-text)))))
+
+(cl-defmethod gui-backend-selection-owner-p (selection
+                                             &context (window-system web))
+  (and (assq selection web--selections) t))
+
+(cl-defmethod gui-backend-selection-exists-p (selection
+                                              &context (window-system web))
+  (or (and (assq selection web--selections) t)
+      (and (eq selection 'CLIPBOARD)
+           (stringp (bound-and-true-p web-clipboard-text))
+           (> (length web-clipboard-text) 0))))
+
 ;; Load web-widgets (skip during dump when noninteractive).
 (unless noninteractive
   (require 'web-widgets))
