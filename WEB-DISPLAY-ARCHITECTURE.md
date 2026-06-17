@@ -261,7 +261,7 @@ bug during development), string literals use a compile-time macro:
 
 ### 3.7 Elisp Integration — `web-win.el`
 
-Loaded when Emacs starts with `--web`. Does three things:
+Loaded when Emacs starts with `--web`. Does four things:
 
 1. Registers `"web"` in `display-format-alist` so Emacs routes display
    calls to the web backend.
@@ -269,6 +269,14 @@ Loaded when Emacs starts with `--web`. Does three things:
    which triggers `web_term_init()` in C.
 3. Adds an `after-init-hook` to start the 60Hz redisplay timer
    (`web--start-redisplay-timer`) after initialization completes.
+4. Implements the selection backend for the `web` window-system —
+   `gui-backend-{set,get}-selection` and `selection-{owner,exists}-p`
+   `cl-defmethod`s with `&context (window-system web)`. These bridge
+   the standard `gui-select-text` / `gui-selection-value` machinery to
+   `web-set-clipboard` (out) and `web-clipboard-text` (in); see the
+   `clipboard` wire message in §6.2. Without them M-w reached only the
+   kill ring. Only CLIPBOARD is mirrored to the browser; PRIMARY stays
+   local so `select-active-regions` doesn't clobber the OS clipboard.
 
 ### 3.8 60Hz Redisplay Timer
 
@@ -660,11 +668,33 @@ Character grid dimensions, not pixels. Browser computes from font metrics.
 Sent on connect. Emacs uses these to map pixel coordinates in mouse events
 to character cells.
 
-#### `clipboard` — Paste from browser
+#### `clipboard` — System clipboard (bidirectional)
 
 ```json
-{"type":"clipboard","dir":"paste","text":"hello world"}
+{"type":"clipboard","dir":"paste","text":"hello world"}   // browser → Emacs
+{"type":"clipboard","dir":"copy","text":"hello world"}    // Emacs → browser
 ```
+
+Bidirectional clipboard integration (see §3.7):
+
+- **Copy (`dir":"copy"`, Emacs → browser):** M-w / C-w →
+  `interprogram-cut-function` (`gui-select-text`) →
+  `gui-backend-set-selection` (web method in web-win.el, CLIPBOARD only)
+  → `web-set-clipboard` (webterm.c) emits this message. The client
+  writes the OS clipboard via the **Electron main process**
+  (`electronAPI.writeClipboard` → `ipcMain 'clipboard-write'` →
+  `clipboard.writeText`). The renderer's `navigator.clipboard.writeText`
+  is rejected ("Document is not focused") because the copy arrives
+  outside a user gesture, so the Electron bridge is required.
+
+- **Paste (`dir":"paste"`, browser → Emacs):** sets `Vweb_clipboard`
+  (`web-clipboard-text`). Sent both on an in-window paste event and,
+  crucially, **whenever the window regains focus** — the client reads
+  the OS clipboard (`electronAPI.readClipboard` → `ipcMain
+  'clipboard-read'`) and pushes it, so C-y after copying in another app
+  sees that copy. `gui-backend-get-selection` for CLIPBOARD returns
+  `web-clipboard-text`, falling back to Emacs's own last selection only
+  if nothing has synced yet.
 
 #### `interrupt` — Ctrl+C / interrupt button
 
