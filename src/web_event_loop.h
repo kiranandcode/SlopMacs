@@ -40,7 +40,8 @@ enum web_event_type
   WEB_EVT_CLIPBOARD,
   WEB_EVT_REQUEST_REDRAW,
   WEB_EVT_MENU_SELECT,
-  WEB_EVT_MENU_CANCEL
+  WEB_EVT_MENU_CANCEL,
+  WEB_EVT_TLDRAW
 };
 
 struct web_event
@@ -55,6 +56,9 @@ struct web_event
   int char_w, char_h, asc, desc;
   char clipboard_dir[16];
   char clipboard_text[4096];
+  char *payload;        /* Heap copy of a tldraw_* JSON line (variable
+                           length; snapshots exceed any fixed buffer).
+                           Freed in web_event_recycle.  */
   struct web_event *next;
 };
 

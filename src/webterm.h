@@ -201,6 +201,11 @@ struct web_display_info
                                    window body.  Always emitted (possibly
                                    empty) so stale overlays clear.  */
       int webview_ph;           /* Body pixel height, mode line excluded.  */
+      char tldraw_id[64];       /* Buffer-local `web-tldraw-board-id' of the
+                                   window's buffer; non-empty means the
+                                   client overlays a tldraw whiteboard over
+                                   the window body.  Always emitted (possibly
+                                   empty) so stale boards clear.  */
     } windows[WEB_MAX_WINDOWS];
     int nwindows;
 

@@ -20,6 +20,12 @@ export class FrameState {
     this.pendingScrolls = [];
     this.pendingClears = [];
     this._clearPending = false;
+    /* tldraw board control channel.  Board components subscribe via
+       onBoardMessage and receive every inbound tldraw_* message; the
+       board content itself lives in Emacs (the .tldr buffer), so
+       FrameState only relays messages, it does not store snapshots.  */
+    this._boardListeners = [];
+    this.colorScheme = 'dark';
   }
 
   onChange (fn) {
@@ -28,6 +34,22 @@ export class FrameState {
       const idx = this._listeners.indexOf(fn);
       if (idx >= 0) this._listeners.splice(idx, 1);
     };
+  }
+
+  /* Subscribe to inbound tldraw_* board messages.  Returns an
+     unsubscribe thunk.  */
+  onBoardMessage (fn) {
+    this._boardListeners.push(fn);
+    return () => {
+      const idx = this._boardListeners.indexOf(fn);
+      if (idx >= 0) this._boardListeners.splice(idx, 1);
+    };
+  }
+
+  _notifyBoard (msg) {
+    for (const fn of this._boardListeners) {
+      try { fn(msg); } catch (e) { console.error('board listener:', e); }
+    }
   }
 
   _notify (immediate) {
@@ -69,6 +91,19 @@ export class FrameState {
         break;
       case 'frame_size':
         this._applyFrameSize(msg);
+        break;
+      case 'tldraw_load':
+      case 'tldraw_cmd':
+      case 'tldraw_theme':
+      case 'tldraw_config':
+      case 'tldraw_node_text':
+      case 'tldraw_layout':
+        /* Relay to the board components (keyed by msg.board).  Theme
+           messages may omit board to target every board.  */
+        if (msg.type === 'tldraw_theme' && msg.colorScheme) {
+          this.colorScheme = msg.colorScheme;
+        }
+        this._notifyBoard(msg);
         break;
       case 'menu':
         this.activeMenu = msg;
@@ -234,6 +269,11 @@ export class FrameState {
           webviewPh: wdata.webview_ph !== undefined
             ? wdata.webview_ph
             : (old ? old.webviewPh : 0),
+          /* tldraw board id overlaid over the window body (see
+             TldrawLayer).  Always sent ('' = none), like webview.  */
+          tldraw: wdata.tldraw !== undefined
+            ? wdata.tldraw
+            : (old ? old.tldraw : ''),
           vacated,
           gen,
         });

@@ -172,6 +172,7 @@ web_event_recycle (struct web_event_queue *queue, struct web_event *event)
   if (!event)
     return;
 
+  free (event->payload);
   memset (event, 0, sizeof *event);
   pthread_mutex_lock (&queue->mutex);
   event->next = queue->free_list;
@@ -488,6 +489,16 @@ web_parse_event (const char *line, int line_len, struct web_event *event)
     {
       event->type = WEB_EVT_MENU_CANCEL;
       return true;
+    }
+  if (strncmp (type, "tldraw_", 7) == 0)
+    {
+      /* tldraw board events (selection, snapshots, node edits) need real
+	 Lisp handling.  The IO thread can't touch Lisp, so carry the raw
+	 JSON line (LINE is NUL-terminated) to the main thread, which
+	 queues it for web-tldraw.el.  Variable length -> heap copy.  */
+      event->type = WEB_EVT_TLDRAW;
+      event->payload = strdup (line);
+      return event->payload != NULL;
     }
 
   return false;

@@ -137,13 +137,56 @@ html, body, #root {
   background: #fff;
 }
 
+/* ---- embedded tldraw boards (web-tldraw.el) ---- */
+.tldraw-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;  /* gaps stay clickable for Emacs */
+}
+.tldraw-board {
+  position: absolute;
+  pointer-events: none;  /* keyboard-first: Emacs owns input by default */
+  overflow: hidden;
+}
+.tldraw-board.mouse-enabled {
+  pointer-events: auto;  /* toggled by `tldraw-mouse-mode' */
+}
+/* Hide tldraw's on-canvas UI (toolbars/menus) — `web-tldraw-hide-ui'.
+   The hideUi prop doesn't react after mount, so we hide via CSS.  */
+.tldraw-board.hide-ui .tlui-layout {
+  display: none !important;
+}
+/* Blend the canvas background with the active Emacs theme; theme.js
+   sets --slop-canvas-bg on the container from the frame background.
+   Also make tldraw text use the same font as the editor — pure CSS so
+   it always applies (the JS applyFont path was timing-fragile across
+   board refreshes).  */
+.tldraw-board .tl-container {
+  --color-background: var(--slop-canvas-bg, var(--color-background));
+  /* Boards inherit the editor font (--emacs-font-family, the single
+     source of truth shared with .emacs-frame).  --slop-board-font is an
+     optional runtime override (set by `web-tldraw-set-font' via the
+     client) so the board font can change live without touching the
+     editor's measured metrics.  */
+  --tl-font-draw: var(--slop-board-font, var(--emacs-font-family));
+  --tl-font-sans: var(--slop-board-font, var(--emacs-font-family));
+  --tl-font-serif: var(--slop-board-font, var(--emacs-font-family));
+  --tl-font-mono: var(--slop-board-font, var(--emacs-font-family));
+}
+
+/* Single source of truth for the editor font; shared with tldraw boards
+   (.tl-container) so whiteboards render text in the same font.  */
+:root {
+  --emacs-font-family: 'Menlo', 'SF Mono', 'Cascadia Code', 'Fira Code',
+                       'JetBrains Mono', 'Consolas', 'Liberation Mono', monospace;
+}
+
 /* ---- emacs frame ---- */
 .emacs-frame {
   width: 100%;
   height: 100%;
   position: relative;
-  font-family: 'Menlo', 'SF Mono', 'Cascadia Code', 'Fira Code',
-               'JetBrains Mono', 'Consolas', 'Liberation Mono', monospace;
+  font-family: var(--emacs-font-family);
   font-size: 16px;
   line-height: 1.2;
   overflow: hidden;

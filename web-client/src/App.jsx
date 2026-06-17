@@ -7,6 +7,7 @@ import { InputHandler } from './input.js';
 import { measureFont } from './measure.js';
 import Frame from './components/Frame.jsx';
 import Menu from './components/Menu.jsx';
+import TldrawLayer from './tldraw/TldrawLayer.jsx';
 import './widgets.js';
 
 const state = new FrameState();
@@ -325,6 +326,7 @@ export default function App () {
       >
         <Frame state={state} />
         <WebviewLayer state={state} />
+        <TldrawLayer state={state} getWs={() => wsRef.current} />
       </div>
 
       {state.activeMenu && wsRef.current && (

@@ -467,6 +467,24 @@ web_capture_webview (struct json_window *jw, struct window *w)
   jw->webview_ph = WINDOW_BOX_HEIGHT_NO_MODE_LINE (w);
 }
 
+/* Capture the buffer-local `web-tldraw-board-id' of W's buffer into JW.
+   A non-empty id makes the client overlay a tldraw whiteboard over the
+   window body.  Reset first so a slot reused for a non-board buffer
+   clears the overlay.  */
+static void
+web_capture_tldraw (struct json_window *jw, struct window *w)
+{
+  jw->tldraw_id[0] = 0;
+  if (!BUFFERP (w->contents))
+    return;
+  Lisp_Object id = buffer_local_value (Qweb_tldraw_board_id, w->contents);
+  if (!STRINGP (id))
+    return;
+  ptrdiff_t len = min (SBYTES (id), (ptrdiff_t) sizeof jw->tldraw_id - 1);
+  memcpy (jw->tldraw_id, SDATA (id), len);
+  jw->tldraw_id[len] = 0;
+}
+
 static void
 web_update_window_begin (struct window *w)
 {
@@ -494,6 +512,7 @@ web_update_window_begin (struct window *w)
   jw->active = true;
   jw->is_menu_bar = WINDOW_MENU_BAR_P (w);
   web_capture_webview (jw, w);
+  web_capture_tldraw (jw, w);
 
   js->current_window = jw;
   js->current_line = NULL;
@@ -1265,6 +1284,12 @@ web_flush_display (struct frame *f)
 		web_write_printf (dpyinfo, ",\"webview_ph\":%d",
 				  jw->webview_ph);
 
+	      /* Always emitted: an empty string clears a stale board
+		 when the window switches to a non-board buffer.  */
+	      WR_LIT (dpyinfo, ",\"tldraw\":");
+	      web_write_json_string (dpyinfo, jw->tldraw_id,
+				     strlen (jw->tldraw_id));
+
 	      /* Within-cycle consistency: lines accumulate over the
 		 whole redisplay cycle, and a scroll mid-cycle reuses
 		 row indices at new pixel positions — so an
@@ -2029,6 +2054,17 @@ web_dispatch_event (struct web_display_info *dpyinfo, struct web_event *event,
     case WEB_EVT_MENU_SELECT:
     case WEB_EVT_MENU_CANCEL:
       return 0;
+
+    case WEB_EVT_TLDRAW:
+      /* Queue the raw JSON line for web-tldraw.el's drain timer.  We are
+	 on the main thread here, so touching Lisp is safe; the payload is
+	 freed by web_event_recycle after this returns.  */
+      if (event->payload)
+	Vweb_tldraw__pending
+	  = Fcons (make_string_from_utf8 (event->payload,
+					  strlen (event->payload)),
+		   Vweb_tldraw__pending);
+      return 0;
     }
 
   return 0;
@@ -2353,6 +2389,21 @@ web_read_socket (struct terminal *terminal,
 	      windows_or_buffers_changed = 63;
 	      clear_current_matrices (f);
 	    }
+	}
+      else
+	{
+	  /* tldraw board events (selection/camera changes, debounced
+	     snapshots, node-edit notifications).  These need real Lisp
+	     handling (parse JSON, update buffers), which is unsafe to
+	     run here inside read-socket; queue the raw line and let an
+	     elisp timer drain it via `web-tldraw--take-pending'.  */
+	  char tbuf[16];
+	  int tlen = json_extract_string (line, line_len, "type",
+					  tbuf, sizeof tbuf);
+	  if (tlen >= 7 && memcmp (tbuf, "tldraw_", 7) == 0)
+	    Vweb_tldraw__pending
+	      = Fcons (make_string_from_utf8 (line, line_len),
+		       Vweb_tldraw__pending);
 	}
     }
 
@@ -3635,6 +3686,50 @@ browsers for writing to the system clipboard.  */)
   return Qt;
 }
 
+DEFUN ("web-tldraw-send", Fweb_tldraw_send, Sweb_tldraw_send, 1, 1, 0,
+       doc: /* Send a raw JSON message line MESSAGE to the web client.
+MESSAGE must be a complete JSON object (a string), typically built with
+`json-serialize'; a trailing newline is appended automatically.  This is
+the single Emacs->client channel for the tldraw board family
+(tldraw_load, tldraw_cmd, tldraw_theme, tldraw_layout, tldraw_node_text).
+Returns t on success, nil if no display is connected.  */)
+  (Lisp_Object message)
+{
+  CHECK_STRING (message);
+
+  struct web_display_info *dpyinfo = web_display_info;
+  if (!dpyinfo)
+    return Qnil;
+#ifdef HAVE_PTHREAD
+  if (!dpyinfo->async_enabled && dpyinfo->proxy_fd < 0)
+    return Qnil;
+#else
+  if (dpyinfo->proxy_fd < 0)
+    return Qnil;
+#endif
+
+  Lisp_Object encoded = ENCODE_UTF_8 (message);
+  web_write_str (dpyinfo, (const char *) SDATA (encoded),
+		 (int) SBYTES (encoded));
+  WR_LIT (dpyinfo, "\n");
+  web_control_flush (dpyinfo);
+
+  return Qt;
+}
+
+DEFUN ("web-tldraw--take-pending", Fweb_tldraw__take_pending,
+       Sweb_tldraw__take_pending, 0, 0, 0,
+       doc: /* Return and clear queued tldraw board events from the client.
+The result is a list of raw JSON strings in arrival order (oldest
+first).  The C input reader pushes inbound `tldraw_*' messages onto an
+internal queue; this drains it.  Called by a timer in web-tldraw.el.  */)
+  (void)
+{
+  Lisp_Object pending = Vweb_tldraw__pending;
+  Vweb_tldraw__pending = Qnil;
+  return Fnreverse (pending);
+}
+
 
 /* Register Lisp symbols for the web backend.  */
 
@@ -3643,9 +3738,12 @@ syms_of_webterm (void)
 {
   DEFSYM (Qweb, "web");
   DEFSYM (Qweb_webview_url, "web-webview-url");
+  DEFSYM (Qweb_tldraw_board_id, "web-tldraw-board-id");
 
   defsubr (&Sweb__start_redisplay_timer);
   defsubr (&Sweb_set_clipboard);
+  defsubr (&Sweb_tldraw_send);
+  defsubr (&Sweb_tldraw__take_pending);
 
   DEFVAR_BOOL ("x-use-underline-position-properties",
 	       x_use_underline_position_properties,
@@ -3665,6 +3763,12 @@ syms_of_webterm (void)
      doc: /* Most recent clipboard text received from the web browser.
 When the user pastes in the browser, this variable is updated.  */);
   Vweb_clipboard = Qnil;
+
+  DEFVAR_LISP ("web-tldraw--pending", Vweb_tldraw__pending,
+     doc: /* Internal queue of inbound `tldraw_*' JSON messages.
+The C input reader pushes raw JSON strings here (newest first); drain
+with `web-tldraw--take-pending'.  Not for direct use.  */);
+  Vweb_tldraw__pending = Qnil;
 
   Fprovide (Qweb, Qnil);
 }
