@@ -352,6 +352,43 @@ which does its own recursive edit and produces "No recursive edit is
 in progress" loops — turning routine errors into catastrophes.
 Recommend removing it.
 
+## Uninterruptible-primitive postmortem (2026-06-17)
+
+A 100%-CPU spin (state `RN`) that **neither preemption nor the 5×C-g
+escape hatch could break** — only `kill -9` + a wrapper restart
+recovered it (losing in-memory state since the last session save).
+
+Root cause class: both preemption (Stage 1) and the escape hatch
+(2026-06-14 postmortem) hinge on the running thread reaching
+`maybe_quit` / `probably_quit`.  Those checkpoints sit on bytecode
+backward branches, funcall entry, and inside the loops of *most* C
+primitives — but **not all** (already noted in Stage 1: "a primitive
+that never calls `maybe_quit` blocks until it returns").  When the spin
+is inside such a primitive: the scheduler can't park it (no
+checkpoint), `Vquit_flag` is set but never checked, and the five rapid
+SIGINTs *do* set `executor_break_requested` but it can never be
+consumed (consumption is in `probably_quit`).  So the editor's
+"nothing can hang me" guarantee is really "**no elisp-level loop, and
+no checkpoint-bearing primitive, can hang me**" — a single tight C
+primitive lacking `maybe_quit` is outside it by construction.
+
+Note the **async I/O thread does not help here**: it keeps display and
+socket I/O live, but never runs Lisp, so it cannot interrupt a Lisp
+computation.
+
+Not pinpointed (the wedged state was lost on restart).  Ruled out:
+`json-serialize` (it *errors* on circular input, doesn't loop) and the
+elisp-value walker (`web-tldraw--value->instance`, cycle-safe by eq
+identity).  It surfaced during heavy `web-tldraw` use.  Next time:
+`sample <emacs-pid>` *before* recovering to capture the spinning C
+stack and name the primitive; the fix is then to add a `maybe_quit`
+to that primitive's loop (the Stage-1 prescription) or to bound the
+input before calling it.
+
+Minor: `web_event_loop.c` gained a `WEB_EVT_TLDRAW` event type (a
+heap-`payload` carrier for inbound `tldraw_*` board messages); see
+[TLDRAW-INTEGRATION.md](TLDRAW-INTEGRATION.md).
+
 ## Build note: image libraries (GIF)
 
 The web configure line passed only protobuf's include/lib paths, so

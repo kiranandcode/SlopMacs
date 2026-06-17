@@ -1015,6 +1015,31 @@ _ws.readyState
 
 ---
 
+## 11b. tldraw + spytial boards
+
+Whiteboards (and elisp-value diagrams) are overlaid on buffer windows
+much like the webview overlay, but with a dedicated bidirectional
+control channel. See [TLDRAW-INTEGRATION.md](TLDRAW-INTEGRATION.md) for
+the full design. Protocol additions to this backend:
+
+- **Per-window field** `"tldraw"` (board id) in `frame_update`, emitted
+  alongside `"webview"` by `web_capture_tldraw` (webterm.c) from the
+  buffer-local `web-tldraw-board-id`. Empty string clears the overlay.
+- **Emacs → client**: `web-tldraw-send` (a one-off NDJSON primitive,
+  like `web-set-clipboard`) carries `tldraw_load` / `tldraw_cmd` /
+  `tldraw_theme` / `tldraw_config` / `tldraw_node_text` / `tldraw_layout`.
+- **Client → Emacs**: `tldraw_event` and `tldraw_snapshot`. In async
+  mode these are parsed on the I/O thread as a `WEB_EVT_TLDRAW` event
+  (heap-allocated payload — snapshots exceed the fixed event buffers),
+  queued into `web-tldraw--pending`, and drained by an elisp timer
+  (`web-tldraw--take-pending`). The `web_read_socket` branch is the
+  synchronous-build fallback.
+
+The board content itself lives in an Emacs buffer (a `.tldr` JSON
+snapshot), not in `frame_update`; an epoch counter prevents echo loops.
+
+---
+
 ## 12. Future Work
 
 - **Image support**: `IMAGE_GLYPH` currently renders as placeholder spaces.

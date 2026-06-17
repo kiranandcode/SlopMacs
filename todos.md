@@ -72,3 +72,19 @@ things I want to fix:
 - [ ] Emacs aborts (eassert in wait_reading_process_output) when its forked
       proxy exits after the last ws client disconnects — should detach
       gracefully instead.
+
+## tldraw + spytial integration (2026-06-17)
+- [ ] Uninterruptible 100%-CPU wedge during heavy web-tldraw use: neither
+      preemption nor the 5xC-g escape hatch broke it (spin in a C
+      primitive lacking maybe_quit; see PREEMPTIVE-THREADS-ARCHITECTURE.md
+      "Uninterruptible-primitive postmortem").  Cause not pinpointed —
+      next recurrence: `sample <emacs-pid>` BEFORE kill -9 to name the
+      primitive, then add maybe_quit there or bound the input.
+- [ ] spytial group rendering is wired client-side (spytial.js draws a
+      dashed labelled box behind member nodes), but the by-selector type
+      `group` directive emits 0 groups in practice — needs spec tuning
+      (try the by-field group variant, or a relation selector).
+- [ ] web-tldraw-visualize: cyclic values conflict with the cdr-below
+      orientation (spytial returns only a feasible subset); a proper
+      ring layout needs honouring spytial's `cyclic` constraint in the
+      client positioner (currently only reads Top/Left constraints).
