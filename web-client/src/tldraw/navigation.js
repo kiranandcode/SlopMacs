@@ -259,7 +259,15 @@ export function applyCommand (editor, verb, args, ctx) {
     case 'nudge-shape': {
       const id = args.id || currentId(editor);
       const shape = id ? editor.getShape(id) : null;
-      if (shape) {
+      if (!shape) break;
+      if (shape.type === 'arrow') {
+        /* An arrow's single control point is its `bend' (perpendicular
+           offset of the midpoint).  Map the nudge direction onto it:
+           up/right bend one way, down/left the other.  */
+        const delta = (args.dx || 0) - (args.dy || 0);
+        editor.updateShape({ id, type: 'arrow',
+                             props: { bend: (shape.props.bend || 0) + delta } });
+      } else {
         editor.updateShape({ id, type: shape.type,
                              x: shape.x + (args.dx || 0),
                              y: shape.y + (args.dy || 0) });
@@ -315,7 +323,7 @@ export function applyCommand (editor, verb, args, ctx) {
       const id = args.id || currentId(editor);
       const shape = id ? editor.getShape(id) : null;
       if (shape && shape.type === 'arrow') {
-        const bend = (shape.props.bend || 0) + (args.delta || 0);
+        const bend = args.reset ? 0 : (shape.props.bend || 0) + (args.delta || 0);
         editor.updateShape({ id, type: 'arrow', props: { bend } });
       }
       break;

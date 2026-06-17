@@ -7,10 +7,15 @@
        bg:"#rrggbb", fg:"#rrggbb", palette:{ blue:"#..", ... } }
 
    - colorScheme drives tldraw's own dark/light theme via user prefs.
-   - bg recolors the canvas background (CSS custom property on the
-     board container) so the board blends with the Emacs frame.
-   - palette (optional) overrides tldraw's named shape colors to match
-     the theme's faces.  */
+   - bg recolors the canvas background (--color-background).
+   - the Emacs palette/fg recolor tldraw's UI *chrome* (grid, selection,
+     accent, text, dividers) via its --tl-color-* CSS variables, so the
+     board's furniture tracks the theme.
+
+   Note: tldraw 5's named *shape* colors (blue/green/...) are JS-computed
+   inline SVG with no public export or CSS hook, so they cannot be
+   remapped to arbitrary theme faces at runtime — only the chrome and
+   dark/light scheme follow the theme.  */
 
 /* Board font.  By default boards inherit the editor font via CSS
    (.tl-container reads var(--emacs-font-family)), so no JS is needed to
@@ -38,20 +43,26 @@ export function applyTheme (editor, msg) {
 
   applyFont(editor, msg.font);
 
-  /* Recolor the canvas background + palette via CSS variables on the
-     board's container.  tldraw reads several --color-* vars; the
-     container is tagged with data-board so theme.css can scope.  */
   const container = editor.getContainer?.();
-  if (container) {
-    if (msg.bg) {
-      container.style.setProperty('--slop-canvas-bg', msg.bg);
-    }
-    if (msg.palette && typeof msg.palette === 'object') {
-      for (const [name, hex] of Object.entries(msg.palette)) {
-        if (typeof hex === 'string') {
-          container.style.setProperty(`--slop-color-${name}`, hex);
-        }
-      }
-    }
-  }
+  if (!container) return;
+
+  /* Canvas background blends with the Emacs frame.  */
+  if (msg.bg) container.style.setProperty('--slop-canvas-bg', msg.bg);
+
+  /* Recolor tldraw's UI chrome from the theme: an accent (first
+     available palette face) drives selection/primary; fg drives text;
+     a muted face drives the grid/dividers.  These are real CSS vars
+     (--tl-color-*) that tldraw reads live, so no repaint nudge needed.  */
+  const pal = (msg.palette && typeof msg.palette === 'object') ? msg.palette : {};
+  const accent = pal.blue || pal.violet || pal.green || msg.fg;
+  const muted = pal.grey || msg.fg;
+  const set = (v, c) => { if (typeof c === 'string') container.style.setProperty(v, c); };
+  set('--tl-color-primary', accent);
+  set('--tl-color-selected', accent);
+  set('--tl-color-selection-fill', accent);
+  set('--tl-color-selection-stroke', accent);
+  set('--tl-color-focus', accent);
+  set('--tl-color-text', msg.fg);
+  set('--tl-color-grid', muted);
+  set('--tl-color-divider', muted);
 }

@@ -168,13 +168,33 @@ line shows `[kbd]`/`[mouse]`, `[edge]` while an edge anchor is set, and
 `{selected node text}`. `web-tldraw-hide-ui` (default t) and
 `web-tldraw-grid` are buffer-local-overridable; `u` toggles UI manually.
 
+**Moving / bending**: the nudge keys are context-sensitive — arrow keys
+(or `M-arrows`) **move** a selected node, but **bend** a selected arrow
+(its single control point); `S-arrows` use a larger step; `<`/`>` bend,
+`|` straightens.
+
+**Theme**: `web-tldraw-sync-theme` (hooked to `enable-theme-functions`)
+drives the dark/light scheme (user prefs), the canvas background, the
+editor font, and tldraw's UI-chrome `--tl-color-*` vars
+(primary/selected/selection-fill/text/grid/divider) from the active
+faces. **Limitation**: tldraw 5's named *shape* colors (blue/green/…)
+are JS-computed inline SVG with no public export or CSS hook, so they
+can't be remapped to arbitrary theme faces — only chrome + scheme + bg
++ font track the theme.
+
 ## spytial layout
 
-`generateLayout()` returns `{layout: {nodes, edges, constraints, …}}`
-— **qualitative** (LayoutNode has no x/y; edges carry full source/target
-node objects). `spytial.js` solves positions from the ordering
-constraints (longest-path layering; grid fallback) and builds tldraw
-geo+arrow shapes. Full WebCola-fidelity positioning is future work.
+`generateLayout()` returns `{layout: {nodes, edges, constraints,
+groups, …}}` — **qualitative** (LayoutNode has no x/y; edges carry full
+source/target node objects). `spytial.js` solves positions from the
+ordering constraints (longest-path layering; grid fallback) and builds
+tldraw geo+arrow shapes. **Groups** (`layout.groups`, each `{name,
+nodeIds}`) render as labelled dashed containers behind their members —
+note the `group` directive must sit under `constraints:` (not
+`directives:`) for spytial to emit it. The built-in positioner does not
+*cluster* grouped nodes (it reads only Top/Left constraints), so group
+boxes can be loose; tight clustering + full WebCola fidelity is future
+work.
 
 ## Notes / limitations
 

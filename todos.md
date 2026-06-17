@@ -80,10 +80,23 @@ things I want to fix:
       "Uninterruptible-primitive postmortem").  Cause not pinpointed —
       next recurrence: `sample <emacs-pid>` BEFORE kill -9 to name the
       primitive, then add maybe_quit there or bound the input.
-- [ ] spytial group rendering is wired client-side (spytial.js draws a
-      dashed labelled box behind member nodes), but the by-selector type
-      `group` directive emits 0 groups in practice — needs spec tuning
-      (try the by-field group variant, or a relation selector).
+- [x] spytial group rendering (2026-06-17): the `group` directive must be
+      under `constraints:` (not `directives:`) for spytial to emit
+      layout.groups — fixed in web-tldraw--visualize-spec.  Client draws a
+      dashed labelled box behind members; web-tldraw-visualize groups by
+      leaf type (Symbol/Integer/...) with >1 atom.  NB: my positioner does
+      not cluster grouped nodes (it only reads Top/Left constraints), so
+      boxes can be loose; tight clustering would need honouring spytial's
+      grouping constraints / a real solver.
+- [x] Arrow control point (2026-06-17): nudge keys are context-sensitive
+      — they bend a selected arrow (its single control point) and move a
+      selected node; `|` straightens (bend 0); `<`/`>` still bend.
+- [x] Theme chrome (2026-06-17): the Emacs theme now drives tldraw's
+      --tl-color-{primary,selected,selection-fill,text,grid,divider} +
+      canvas bg + font + dark/light scheme.  LIMITATION: tldraw 5's named
+      *shape* colors (blue/green/...) are JS-computed inline SVG with no
+      public export or CSS hook, so they cannot be remapped to arbitrary
+      theme faces at runtime — only chrome + scheme follow the theme.
 - [ ] web-tldraw-visualize: cyclic values conflict with the cdr-below
       orientation (spytial returns only a feasible subset); a proper
       ring layout needs honouring spytial's `cyclic` constraint in the

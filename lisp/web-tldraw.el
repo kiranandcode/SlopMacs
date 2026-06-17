@@ -312,6 +312,7 @@ trigger a re-load, so there is no echo loop."
   "d"     #'web-tldraw-delete
   "<"     #'web-tldraw-bend-left
   ">"     #'web-tldraw-bend-right
+  "|"     #'web-tldraw-bend-reset
   "="     #'web-tldraw-zoom-fit
   "+"     #'web-tldraw-zoom-in
   "-"     #'web-tldraw-zoom-out
@@ -404,6 +405,9 @@ file; otherwise create a scratch board.  Returns the buffer."
 (defun web-tldraw-redo ()        (interactive) (web-tldraw--cmd "redo"))
 (defun web-tldraw-bend-left ()   (interactive) (web-tldraw--cmd "nudge-bend" '(:delta -30)))
 (defun web-tldraw-bend-right ()  (interactive) (web-tldraw--cmd "nudge-bend" '(:delta 30)))
+(defun web-tldraw-bend-reset ()
+  "Straighten the selected arrow (reset its bend/control point)."
+  (interactive) (web-tldraw--cmd "nudge-bend" '(:reset t)))
 (defcustom web-tldraw-nudge-step 20
   "Pixels the selected node moves per `web-tldraw-nudge-*' command.
 Shift-arrow variants move `web-tldraw-nudge-big-step' pixels."
@@ -884,6 +888,12 @@ lacks (e.g. `elt' when there are no vectors).  Set a string to override."
   :type '(choice (const :tag "Auto" nil) (string :tag "YAML spec"))
   :group 'web-tldraw)
 
+(defcustom web-tldraw-visualize-group-by-type t
+  "When non-nil, `web-tldraw-visualize' groups atoms by type.
+Each type with more than one atom becomes a spytial group, drawn as a
+labelled dashed container behind its members."
+  :type 'boolean :group 'web-tldraw)
+
 (defun web-tldraw--visualize-spec (instance)
   "Build a CnD spec for INSTANCE, referencing only present relations/types.
 `car' goes right, `cdr'/`elt' go down (box-and-pointer); each present
@@ -904,16 +914,27 @@ subset); cycles still render as back-edges, just not arranged in a ring."
                                          r (cdr d)))))
                      rels)))
          (group-lines
-          (delq nil (mapcar
-                     (lambda (ty)
-                       (when (member ty '("Symbol" "Integer" "String" "Float"))
-                         (format "  - group: {selector: %s, name: %s, addEdge: false}"
-                                 ty (downcase ty))))
-                     types))))
-    (concat (when cons-lines
-              (concat "constraints:\n" (string-join cons-lines "\n") "\n"))
-            (when group-lines
-              (concat "directives:\n" (string-join group-lines "\n") "\n")))))
+          (when web-tldraw-visualize-group-by-type
+            (delq nil (mapcar
+                       (lambda (ty)
+                         ;; Group only leaf types (the meaningful clusters);
+                         ;; grouping Cons/Vector would box the whole
+                         ;; structural backbone.  Only types with >1 atom,
+                         ;; so single-member boxes don't clutter.
+                         (when (and (member ty '("Symbol" "Integer" "String"
+                                                 "Float"))
+                                    (> (seq-count
+                                        (lambda (a) (equal (plist-get a :type) ty))
+                                        (append (plist-get instance :atoms) nil))
+                                       1))
+                           (format "  - group: {selector: %s, name: %s, addEdge: false}"
+                                   ty (downcase ty))))
+                       types)))))
+    ;; NB: `group' must live under `constraints:' (not `directives:') for
+    ;; spytial to emit it into layout.groups.
+    (when (or cons-lines group-lines)
+      (concat "constraints:\n"
+              (string-join (append cons-lines group-lines) "\n") "\n"))))
 
 (defun web-tldraw--value-type (obj)
   "Spytial type name for OBJ."
