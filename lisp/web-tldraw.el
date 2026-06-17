@@ -564,6 +564,7 @@ selection, \\[web-tldraw-visual-delete] deletes it, \\[web-tldraw-visual-cancel]
 cancels.  With a multi-selection the move keys (in normal mode) shift the
 whole group."
   :lighter nil
+  :keymap tldraw-visual-mode-map
   (if web-tldraw-visual-mode
       (web-tldraw--cmd "visual-start"
                        (list :style (symbol-name web-tldraw--visual-style)))
