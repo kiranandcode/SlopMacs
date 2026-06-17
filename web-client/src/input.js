@@ -157,10 +157,16 @@ export class InputHandler {
         charCode = e.key.codePointAt(0);
         keycode = charCode;
 
-        // On macOS, Option+key produces a special character in e.key
-        // (e.g. Option+t → "†").  When Option is held (Super for us),
-        // use the physical key code to get the raw unmodified character.
-        if (IS_MAC && e.altKey && e.code) {
+        // On macOS, a held GUI modifier corrupts e.key in two ways:
+        //  - Option (Super for us) composes a special character
+        //    (Option+t → "†"), and
+        //  - Command (Meta for us) drops the Shift transformation for
+        //    punctuation/digits, so Cmd+Shift+',' arrives as ',' not
+        //    '<' — which is why M-< came through as M-,.
+        // In both cases derive the intended character from the physical
+        // key code plus the real shift state.  US-layout map; falls back
+        // to e.key when the code isn't mapped.
+        if (IS_MAC && (e.altKey || e.metaKey) && e.code) {
           const raw = codeToChar(e.code, e.shiftKey);
           if (raw) {
             charCode = raw;
