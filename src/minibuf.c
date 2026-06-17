@@ -582,6 +582,17 @@ read_minibuf (Lisp_Object map, Lisp_Object initial, Lisp_Object prompt,
   Lisp_Object calling_window = selected_window;
   Lisp_Object enable_multibyte;
   EMACS_INT pos = 0;
+
+#ifdef THREADS_ENABLED
+  /* A detached background command (its slow foreground turn handed
+     input to a newer executor) must not open a minibuffer: the input
+     it would block on is owned by the foreground executor, and the
+     global minibuf_level/command_loop_level it bumps would corrupt the
+     foreground command loop -- wedging the whole editor.  Bail out
+     before touching any of that, throwing to the thread entry which
+     lets this background thread die.  */
+  command_executor_exit_if_detached ();
+#endif
   /* String to add to the history.  */
   Lisp_Object histstring;
   Lisp_Object histval;

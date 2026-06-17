@@ -714,6 +714,15 @@ recursive_edit_1 (void)
   specpdl_ref count = SPECPDL_INDEX ();
   Lisp_Object val;
 
+#ifdef THREADS_ENABLED
+  /* A detached background command must not enter a recursive edit: it
+     would block on input the foreground executor owns and bump the
+     global command_loop_level the foreground loop relies on.  Bail
+     before the increment below.  (The foreground executor's own top
+     level passes this -- it still owns input.)  */
+  command_executor_exit_if_detached ();
+#endif
+
   if (command_loop_level > 0)
     {
       specbind (Qstandard_output, Qt);
