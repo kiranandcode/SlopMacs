@@ -20,6 +20,13 @@ import { applyTheme } from './theme.js';
 
 const SNAPSHOT_DEBOUNCE_MS = 400;
 
+/* Module-level (referentially stable) so it is NOT a fresh function on
+   every render — an inline getShapeVisibility makes tldraw re-create the
+   editor each render, which shows an endless loading spinner and churns
+   CPU.  Hides folded group members (meta.slopHidden).  */
+const SHAPE_VISIBILITY = (shape) =>
+  (shape.meta && shape.meta.slopHidden) ? 'hidden' : 'inherit';
+
 export default function TldrawBoard ({ boardId, state, getWs }) {
   const [editor, setEditor] = useState(null);
   const editorRef = useRef(null);
@@ -143,13 +150,11 @@ export default function TldrawBoard ({ boardId, state, getWs }) {
      the keyboard).  Keyboard-first means Emacs must keep focus; the
      board is driven through the Editor API.  When mouse-mode is on the
      user clicks into the board to interact with it directly.  */
-  /* getShapeVisibility hides folded group members (meta.slopHidden).  */
   return (
     <Tldraw
       onMount={onMount}
       autoFocus={false}
-      getShapeVisibility={(shape) =>
-        (shape.meta && shape.meta.slopHidden) ? 'hidden' : 'inherit'}
+      getShapeVisibility={SHAPE_VISIBILITY}
     />
   );
 }
