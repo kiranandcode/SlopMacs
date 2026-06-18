@@ -143,5 +143,13 @@ export default function TldrawBoard ({ boardId, state, getWs }) {
      the keyboard).  Keyboard-first means Emacs must keep focus; the
      board is driven through the Editor API.  When mouse-mode is on the
      user clicks into the board to interact with it directly.  */
-  return <Tldraw onMount={onMount} autoFocus={false} />;
+  /* getShapeVisibility hides folded group members (meta.slopHidden).  */
+  return (
+    <Tldraw
+      onMount={onMount}
+      autoFocus={false}
+      getShapeVisibility={(shape) =>
+        (shape.meta && shape.meta.slopHidden) ? 'hidden' : 'inherit'}
+    />
+  );
 }

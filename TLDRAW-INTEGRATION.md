@@ -93,13 +93,33 @@ Keys in `tldraw-mode`: `C-n/C-p/C-b/C-f` (or `n/p/b/f`) directional
 focus; `C-M-n/C-M-p` / `TAB`/`S-TAB` cycle nodes; `C-l`/`M-l` recenter
 the node (cycles center/top/bottom, like `recenter-top-bottom`); `RET`
 run the node's action (else edit it; else commit an edge if an anchor is
-set); `C-SPC` set edge anchor; `v` **visual box-select** (see below);
-`e` edit node; `a`/`t` add node/text; `d` delete; `<`/`>` bend arrow;
+set); on a group box RET folds/unfolds it; `C-SPC` set edge anchor; `v`
+**visual box-select** / `V` path-select (see below); `e` edit node;
+`a`/`t` add node/text; `d` delete; `M-w`/`C-w`/`C-y` copy/kill/yank
+(see below); `G` group selection into a box; `<`/`>` bend arrow;
 **arrow keys (or `M-arrows`) move the selected node** — or the whole
 group when several are selected (`S-arrows` = larger step;
 `web-tldraw-nudge-step` / `-big-step`); `=` zoom-fit, `+`/`-` **zoom
 in/out**, `0` reset, `.` center; `C-/` undo, `C-?` redo; `u` toggle UI;
 `m` toggle mouse; `C-g` clear anchor. A freshly created node is centered.
+
+### Clipboard, grouping, folding
+
+- **Kill ring** — `M-w` copy / `C-w` kill / `C-y` yank. Copy/kill ask
+  the client for `getContentFromCurrentPage(selection)`, which round-
+  trips back as a `clip` event whose JSON envelope (`{slopTldraw,
+  content}`) lands on the Emacs kill ring as **portable text** — so it
+  survives across boards and you can even paste it into a text buffer.
+  `C-y` sends the current kill back; the client `putContentOntoCurrentPage`
+  re-inflates it centered on the viewport and selects it. A non-tldraw
+  kill is pasted as a text node, so you can yank text from anywhere.
+- **Group** (`G`, or `g` in visual mode) — wraps the selection in a
+  tldraw **frame** (a labelled container that moves and folds as a
+  unit; `reparentShapes` into it).
+- **Fold** (`RET` on a frame) — hides the members via the editor's
+  `getShapeVisibility` hook (each member gets `meta.slopHidden`) and
+  collapses the frame to its header; `RET` again restores. No
+  delete/recreate, so shape identity and bindings survive.
 
 ### Visual selection — box (`v`) and path (`V`)
 

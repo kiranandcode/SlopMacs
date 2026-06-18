@@ -85,6 +85,8 @@ back with the epoch they descend from, so stale echoes are ignored.")
   "Text of the currently selected shape, for the mode line.")
 (defvar-local web-tldraw--selection-meta nil
   "Alist of the currently selected shape's `meta' (from the client).")
+(defvar-local web-tldraw--selection-type nil
+  "Shape type of the current selection (e.g. \"geo\", \"frame\").")
 (defvar-local web-tldraw--recenter-state 0
   "Cycle counter for `web-tldraw-recenter' (like `recenter-top-bottom').")
 (defvar-local web-tldraw--edge-anchor nil
@@ -276,8 +278,17 @@ trigger a re-load, so there is no echo loop."
            (setq web-tldraw--selection (alist-get 'id msg)
                  web-tldraw--selection-text (alist-get 'text msg)
                  web-tldraw--selection-meta (alist-get 'meta msg)
+                 web-tldraw--selection-type (alist-get 'shapeType msg)
                  web-tldraw--recenter-state 0)
            (force-mode-line-update))
+          ("clip"
+           ;; Selection serialized by copy/cut -> kill ring (portable
+           ;; text); paste re-inflates it.
+           (let ((content (alist-get 'content msg)))
+             (when (and (stringp content) (> (length content) 0))
+               (kill-new content)
+               (message "tldraw: %d node(s) copied"
+                        (or (alist-get 'count msg) 0)))))
           ("created"
            (setq web-tldraw--selection (alist-get 'id msg)
                  web-tldraw--selection-meta (alist-get 'meta msg)))
@@ -320,6 +331,10 @@ trigger a re-load, so there is no echo loop."
   "t"     #'web-tldraw-add-text-interactive
   "e"     #'web-tldraw-enter-edit
   "d"     #'web-tldraw-delete
+  "M-w"   #'web-tldraw-copy
+  "C-w"   #'web-tldraw-kill
+  "C-y"   #'web-tldraw-yank
+  "G"     #'web-tldraw-group
   "<"     #'web-tldraw-bend-left
   ">"     #'web-tldraw-bend-right
   "|"     #'web-tldraw-bend-reset
@@ -458,6 +473,37 @@ near the bottom."
   (interactive)
   (web-tldraw--cmd "delete"))
 
+;;;; Clipboard (kill ring) + grouping
+
+(defun web-tldraw-copy ()
+  "Copy the selected shapes onto the kill ring (portable tldraw content).
+The client serializes the selection and returns it; it lands on the kill
+ring as text, so it survives across boards (and can be pasted as text)."
+  (interactive)
+  (web-tldraw--cmd "copy"))
+
+(defun web-tldraw-kill ()
+  "Cut the selected shapes to the kill ring (copy, then delete)."
+  (interactive)
+  (web-tldraw--cmd "cut"))
+
+(defun web-tldraw-yank ()
+  "Paste the kill ring into the board, centered on the viewport.
+tldraw content re-inflates as shapes (selected); any other text becomes
+a node so you can paste text from anywhere."
+  (interactive)
+  (let ((s (current-kill 0 t)))
+    (if (and s (> (length s) 0))
+        (web-tldraw--cmd "paste" (list :content s :text s))
+      (message "tldraw: kill ring empty"))))
+
+(defun web-tldraw-group (&optional name)
+  "Wrap the selected shapes in a labelled group box (a frame).
+The box moves and folds as a unit; RET on it folds/unfolds.  With a
+prefix arg, prompt for NAME."
+  (interactive (list (when current-prefix-arg (read-string "Group name: "))))
+  (web-tldraw--cmd "group" (when name (list :name name))))
+
 (defun web-tldraw-toggle-mouse ()
   "Toggle direct mouse interaction on this board (default off)."
   (interactive)
@@ -489,13 +535,20 @@ entries for per-board behavior (see `web-tldraw-dired').")
   "Return KEY from the selected node's `meta' alist, or DEFAULT."
   (or (alist-get key web-tldraw--selection-meta) default))
 
+(defun web-tldraw-fold ()
+  "Fold/unfold the selected group box (frame)."
+  (interactive)
+  (web-tldraw--cmd "fold-toggle"))
+
 (defun web-tldraw-ret ()
   "Act on the selected node.
-With an edge anchor set, draw an edge to the selection; otherwise run
-`web-tldraw-node-action-functions', falling back to editing the node."
+With an edge anchor set, draw an edge to the selection; on a group box
+fold/unfold it; otherwise run `web-tldraw-node-action-functions',
+falling back to editing the node."
   (interactive)
   (cond
    (web-tldraw--edge-anchor (web-tldraw-edge-commit))
+   ((equal web-tldraw--selection-type "frame") (web-tldraw-fold))
    ((run-hook-with-args-until-success
      'web-tldraw-node-action-functions
      web-tldraw-board-id web-tldraw--selection
@@ -552,6 +605,8 @@ With an edge anchor set, draw an edge to the selection; otherwise run
   "<left>"  #'web-tldraw-visual-left
   "RET" #'web-tldraw-visual-accept
   "d"   #'web-tldraw-visual-delete
+  "g"   #'web-tldraw-visual-group
+  "w"   #'web-tldraw-visual-copy
   "C-g" #'web-tldraw-visual-cancel
   "q"   #'web-tldraw-visual-cancel)
 
@@ -611,6 +666,18 @@ rather than a rectangle)."
   (web-tldraw--cmd "select" (list :ids []))
   (web-tldraw-visual-mode -1)
   (message "tldraw: selection cleared"))
+
+(defun web-tldraw-visual-group ()
+  "Group the visual selection into a box and exit visual mode."
+  (interactive)
+  (web-tldraw-group)
+  (web-tldraw-visual-mode -1))
+
+(defun web-tldraw-visual-copy ()
+  "Copy the visual selection to the kill ring and exit visual mode."
+  (interactive)
+  (web-tldraw-copy)
+  (web-tldraw-visual-mode -1))
 
 ;;;; In-node editing (Emacs-routed)
 

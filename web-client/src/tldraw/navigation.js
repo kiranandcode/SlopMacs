@@ -315,6 +315,91 @@ export function applyCommand (editor, verb, args, ctx) {
       }
       break;
     }
+    case 'copy':
+    case 'cut': {
+      /* Serialize the selection to portable tldraw content and hand it
+         back to Emacs (which puts it on the kill ring).  cut also
+         deletes.  */
+      const ids = editor.getSelectedShapeIds();
+      if (!ids.length) break;
+      let content = null;
+      try { content = editor.getContentFromCurrentPage(ids); }
+      catch (e) { console.error('tldraw copy:', e); }
+      if (content) {
+        ctx.send({ type: 'tldraw_event', board: ctx.boardId, event: 'clip',
+                   content: JSON.stringify({ slopTldraw: 1, content }),
+                   count: ids.length });
+      }
+      if (verb === 'cut') editor.deleteShapes(ids);
+      break;
+    }
+    case 'paste': {
+      const vp = editor.getViewportPageBounds();
+      const point = vp ? { x: vp.x + vp.w / 2, y: vp.y + vp.h / 2 } : undefined;
+      let env = null;
+      try { env = JSON.parse(args.content || 'null'); } catch (e) { /* not json */ }
+      if (env && env.slopTldraw && env.content) {
+        editor.putContentOntoCurrentPage(env.content, { point, select: true });
+      } else if (typeof args.text === 'string' && args.text.length) {
+        /* Arbitrary killed text -> a node, so you can paste from anywhere.  */
+        const id = createShapeId();
+        editor.createShape({
+          id, type: 'geo', x: point ? point.x : 0, y: point ? point.y : 0,
+          props: { geo: 'rectangle', w: 220, h: 64, dash: 'solid', size: 's',
+                   font: 'sans', richText: toRichText(args.text) },
+        });
+        editor.setSelectedShapes([id]);
+        if (point) editor.centerOnPoint(point, { animation: { duration: 150 } });
+      }
+      break;
+    }
+    case 'group': {
+      /* Wrap the selection in a frame (a labelled container that moves
+         and folds as a unit).  */
+      const ids = editor.getSelectedShapeIds();
+      if (!ids.length) break;
+      const b = editor.getSelectionPageBounds();
+      if (!b) break;
+      const PAD = 36;
+      const fid = createShapeId();
+      editor.createShape({
+        id: fid, type: 'frame',
+        x: b.x - PAD, y: b.y - PAD,
+        props: { w: b.w + 2 * PAD, h: b.h + 2 * PAD, name: args.name || 'group' },
+        meta: { slopGroup: true },
+      });
+      editor.reparentShapes(ids, fid);
+      editor.setSelectedShapes([fid]);
+      ctx.send({ type: 'tldraw_event', board: ctx.boardId, event: 'selection',
+                 id: fid, shapeType: 'frame', text: args.name || 'group', meta: {} });
+      break;
+    }
+    case 'fold-toggle': {
+      const id = args.id || currentId(editor);
+      const shape = id ? editor.getShape(id) : null;
+      if (!shape || shape.type !== 'frame') break;
+      const kids = editor.getSortedChildIdsForParent(id);
+      const folded = !(shape.meta && shape.meta.folded);
+      editor.run(() => {
+        kids.forEach(kid => {
+          const k = editor.getShape(kid);
+          if (k) editor.updateShape({ id: kid, type: k.type,
+                                      meta: { ...(k.meta || {}), slopHidden: folded } });
+        });
+        if (folded) {
+          editor.updateShape({ id, type: 'frame',
+            props: { h: 40 },
+            meta: { ...shape.meta, folded: true, foldH: shape.props.h } });
+        } else {
+          editor.updateShape({ id, type: 'frame',
+            props: { h: shape.meta.foldH || shape.props.h },
+            meta: { ...shape.meta, folded: false } });
+        }
+      });
+      ctx.send({ type: 'tldraw_event', board: ctx.boardId, event: 'folded',
+                 id, folded });
+      break;
+    }
     case 'recenter':
       recenter(editor, args.pos || 'center', args.id);
       break;

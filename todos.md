@@ -73,6 +73,51 @@ things I want to fix:
       proxy exits after the last ws client disconnects — should detach
       gracefully instead.
 
+## Visual polish: subpixel scroll + motion FX (2026-06-17)
+- [x] True subpixel + momentum scrolling: webterm.c now builds the wheel
+      event's arg as `list3(lines, Qt, pixels)` so `(nth 4 event)` is
+      `(t . PIXELS)` — what `pixel-scroll-precision' reads (a plain fixnum
+      arg landed at nth 3, leaving nth 4 nil → it fell back to line
+      scrolling).  web-win.el enables `pixel-scroll-precision-mode`
+      (+momentum/interpolate) and remaps C-v/M-v to
+      `pixel-scroll-interpolate-{down,up}`.  Renderer (renderEngine.js)
+      full-repaints a window whose top line has pixel_y<0 (vscroll active)
+      to avoid scroll ghosting.  input.js keeps the sub-pixel wheel
+      remainder and converts DOM_DELTA_LINE/PAGE wheels to pixels.
+- [x] Motion FX overlay (web-client/src/fx.js): transparent canvas above
+      the text, self-stopping rAF (0% idle).  Cursor comet trail + CSS
+      caret glide (snap+beacon on big jumps); jump beacons + isearch
+      flashes + smooth scroll-to-definition driven from lisp/web-fx.el via
+      the generic `web-tldraw-send' channel ({"type":"fx",...}, absolute
+      frame-pixel coords from posn-at-point + window-inside-pixel-edges).
+- [x] LIVE-VERIFIED 2026-06-17 (hot-reloaded): wheel→precision vscroll
+      works end-to-end (synthetic wheel-down → window-vscroll 4px → client
+      top row pixel_y<0); FX flash hint reaches client.  GOTCHA for the
+      debug REPL: zsh `echo` interprets `\n`, splitting NDJSON — use
+      `String.fromCharCode(10)` for the message terminator.
+- [x] Scroll ghosting (overlapping lines) FIXED: A3's lineGens.clear() was
+      insufficient — a row repainted over the prior frame left a vscroll-px
+      sliver behind.  Fix: when vscrolled, clear the whole window to bg
+      before repainting all rows (renderEngine.js drawWindow).  Verified
+      via canvas-snapshot→JPEG (static vscroll + mid-momentum both clean).
+- [x] Uneven scroll / "only cursor line smooth, rest flickers" FIXED: two
+      row-reuse optimizations bit-blit a block of rows while only changed
+      rows pick up the sub-line vscroll → bulk steps by whole lines.
+      (1) scrolling_window: webterm.c web_update_window_begin sets
+      desired_matrix->no_scrolling_p when w->vscroll!=0 (runs before the
+      check in update_window).  (2) try_window_id/try_window_reusing call
+      scroll_run_hook directly (bypass no_scrolling_p) at vscroll==0
+      line-boundary frames → disable via C specials inhibit-try-window-id/
+      -reusing, dlet-bound ONLY around the precision-scroll fns in
+      web-win.el (web--scroll-inhibit-reuse advice) so typing keeps its
+      optimizations.  MUST use dlet (lexical-binding would make the let a
+      no-op vs the C globals).  Verified: every frame has a single uniform
+      inter-row pixel step (uniqSteps:[22]).
+- [ ] Still worth doing if inference proves flaky under exotic layouts:
+      emit `w->vscroll` as a per-window frame_update field instead of
+      inferring vscroll from pixel_y<0.  Also: smooth-jump (C3) heuristic
+      not yet stress-tested against misfires.
+
 ## tldraw + spytial integration (2026-06-17)
 - [ ] Uninterruptible 100%-CPU wedge during heavy web-tldraw use: neither
       preemption nor the 5xC-g escape hatch broke it (spin in a C
@@ -112,3 +157,12 @@ things I want to fix:
       added to the selection (freeform set), vs `v`'s rectangle.  Shared
       visual-start/move verbs branch on the style; mode line shows
       [box N] / [path N].
+- [x] Node clipboard + grouping + folding (2026-06-17): M-w/C-w/C-y
+      copy/kill/yank selected nodes through the Emacs kill ring as
+      portable text ({slopTldraw,content} JSON via
+      getContentFromCurrentPage/putContentOntoCurrentPage; copy is a
+      round-trip clip event); non-tldraw kills paste as a text node.
+      `G' (or `g' in visual mode) wraps the selection in a tldraw frame;
+      RET on a frame folds/unfolds by hiding members via the
+      getShapeVisibility hook (meta.slopHidden) + collapsing the frame
+      (no delete/recreate, so identity/bindings survive).
