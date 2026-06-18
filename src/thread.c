@@ -822,12 +822,6 @@ static int command_busy_count;
    started; detach-on-slow triggers off this.  */
 static double executor_command_start_ms;
 
-/* The command_loop_level at which the current command executor runs its
-   top-level command loop (0 for the initial executor, 1 for a resume
-   executor; see executor_recursive_edit).  Detach and the blocking-wait
-   clamp treat this level as "top level".  */
-static EMACS_INT executor_base_loop_level;
-
 static struct thread_state *
 command_executor_ptr (void)
 {
@@ -893,16 +887,10 @@ command_executor_exit_if_detached (void)
 static Lisp_Object
 executor_recursive_edit (Lisp_Object ignore)
 {
-  /* recursive_edit_1 (inside Frecursive_edit) bumps command_loop_level
-     by one; that bumped value is this executor's top-level baseline.
-     The initial executor lands at 0, but a *resume* executor enters one
-     level deeper -- the detaching thread it replaces has not unwound
-     command_loop_level yet -- so it would sit at 1.  Detach and the
-     blocking-wait clamp compare against this baseline instead of a
-     hard-coded 0, otherwise they never fire on a resume executor and
-     detach-on-slow silently dies after the very first detach (which is
-     exactly why slow/blocking commands kept freezing the editor).  */
-  executor_base_loop_level = command_loop_level + 1;
+  /* The executor's top-level command_loop_level is captured lazily in
+     command_loop_1 (the outermost idle point), per thread -- see
+     keyboard.c.  Capturing it here would race the main thread on the
+     shared global.  */
   return Frecursive_edit ();
 }
 
@@ -967,6 +955,7 @@ command_executor_detach (void)
     = Fmake_thread (Fintern (build_string ("command-executor--resume"), Qnil),
 		    build_string ("command-executor"), Qnil);
   thread_preempt_parked--;
+  thread_detach_count++;
 }
 
 static void
@@ -1026,7 +1015,7 @@ thread_consider_detach (void)
   if (thread_detach_commands
       && current_thread->in_command
       && current_thread_is_command_executor ()
-      && command_loop_level == executor_base_loop_level
+      && current_thread->executor_base_loop_level_set && command_loop_level == current_thread->executor_base_loop_level
       && minibuf_level == 0
       && NILP (Vexecuting_kbd_macro)
       && thread_monotonic_ms () - executor_command_start_ms >= thread_detach_ms)
@@ -1082,10 +1071,13 @@ thread_executor_wait_cap_ms (void)
   if (thread_detach_commands
       && current_thread->in_command
       && current_thread_is_command_executor ()
-      && command_loop_level == executor_base_loop_level
+      && current_thread->executor_base_loop_level_set && command_loop_level == current_thread->executor_base_loop_level
       && minibuf_level == 0
       && NILP (Vexecuting_kbd_macro))
-    return thread_detach_ms > 3600000 ? 3600000 : (int) thread_detach_ms;
+    {
+      thread_wait_cap_hits++;
+      return thread_detach_ms > 3600000 ? 3600000 : (int) thread_detach_ms;
+    }
   return -1;
 }
 
@@ -1706,6 +1698,14 @@ the minibuffer, or keyboard macros).  */);
     doc: /* Milliseconds a command may run before it detaches.
 See `thread-detach-commands'.  */);
   thread_detach_ms = 100;
+
+  DEFVAR_INT ("thread-detach-count", thread_detach_count,
+    doc: /* Number of times a slow command has detached.  Diagnostic.  */);
+  thread_detach_count = 0;
+
+  DEFVAR_INT ("thread-wait-cap-hits", thread_wait_cap_hits,
+    doc: /* Times the foreground executor's wait was clamped.  Diagnostic.  */);
+  thread_wait_cap_hits = 0;
 
   DEFSYM (Qcommand_executor_detached, "command-executor-detached");
   staticpro (&command_executor_thread_obj);

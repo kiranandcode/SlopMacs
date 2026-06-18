@@ -203,6 +203,15 @@ struct thread_state
      command_executor_exit_if_detached).  */
   bool executor_thread;
 
+  /* The command_loop_level at which this executor thread's OUTERMOST
+     command loop runs -- its "top level".  Captured lazily on the
+     first command_loop_1 iteration (avoiding the spawn-time race on
+     the shared global command_loop_level).  Detach and the wait clamp
+     fire only when command_loop_level equals this, so a command inside
+     a recursive edit / minibuffer (which is deeper) stays attached.  */
+  EMACS_INT executor_base_loop_level;
+  bool executor_base_loop_level_set;
+
   /* The OS identifier for this thread.  */
   sys_thread_t thread_id;
 

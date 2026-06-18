@@ -1440,6 +1440,19 @@ command_loop_1 (void)
       raw_keybuf_count = 0;
       Lisp_Object keybuf[READ_KEY_ELTS];
 #ifdef THREADS_ENABLED
+      /* Capture this executor's top-level command_loop_level the first
+	 time we idle here -- the outermost command loop.  Done here, not
+	 at thread spawn, to avoid racing the main thread's own
+	 command_loop_level on the shared global.  Detach/clamp key off
+	 this; without a correct baseline they never fired and slow
+	 commands kept freezing the editor.  */
+      if (current_thread->executor_thread
+	  && current_thread_is_command_executor ()
+	  && !current_thread->executor_base_loop_level_set)
+	{
+	  current_thread->executor_base_loop_level = command_loop_level;
+	  current_thread->executor_base_loop_level_set = true;
+	}
       /* Tell the UI thread we are idle: while we wait for input,
 	 read_char does the redisplaying.  */
       command_executor_set_busy (false);
@@ -14546,7 +14559,7 @@ key has been read inside `read-key-sequence'.  */);
     doc: /* The key sequence currently being remap, or nil.
 Bound to a vector containing the sub-sequence matching a binding
 within `input-decode-map' or `local-function-key-map' when its bound
-function is called to remap that sequence.  */);
+afunction is called to remap that sequence.  */);
   Vcurrent_key_remap_sequence = Qnil;
   DEFSYM (Qcurrent_key_remap_sequence, "current-key-remap-sequence");
 
