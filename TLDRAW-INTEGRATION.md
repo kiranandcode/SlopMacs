@@ -244,6 +244,9 @@ work.
   0% idle CPU otherwise).
 - Boards are pooled/capped (4) in `TldrawLayer`; evicted boards reload
   from Emacs on reappearance (content is in Emacs, so this is safe).
-- In-node editing currently mirrors a real Emacs buffer's text live onto
-  the shape; rendering an actual Emacs window *inside* a shape rect is a
-  future north-star.
+- In-node editing (RET) opens the edit buffer *synchronously* from the
+  already-tracked selection (id + `web-tldraw--selection-text`), with no
+  client round-trip — the old `enter-edit`→`edit-begin` round-trip was
+  unreliable when the client was busy (RET would appear to do nothing).
+  Edits mirror live onto the shape (`tldraw_node_text`); rendering an
+  actual Emacs window *inside* a shape rect is a future north-star.

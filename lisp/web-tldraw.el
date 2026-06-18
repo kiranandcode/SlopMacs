@@ -516,10 +516,17 @@ prefix arg, prompt for NAME."
 
 (defun web-tldraw-enter-edit ()
   "Edit the selected node's text in an Emacs buffer.
-Sends `enter-edit'; the client replies with the node's current text
-(an `edit-begin' event), which opens the edit buffer."
+Opens the edit buffer immediately from the known selection (id + text
+tracked from selection events) — no client round-trip, so it is reliable
+even when the client is busy.  Edits mirror live onto the node."
   (interactive)
-  (web-tldraw--cmd "enter-edit"))
+  (if (and web-tldraw--selection (stringp web-tldraw--selection)
+           (> (length web-tldraw--selection) 0))
+      (web-tldraw--open-node-editor
+       (list (cons 'id web-tldraw--selection)
+             (cons 'text (or web-tldraw--selection-text ""))
+             (cons 'shapeType (or web-tldraw--selection-type ""))))
+    (message "tldraw: no node selected (navigate to one first)")))
 
 (defvar web-tldraw-node-action-functions nil
   "Abnormal hook run by RET on the selected node.
