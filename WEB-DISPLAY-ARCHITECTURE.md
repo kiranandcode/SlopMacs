@@ -980,7 +980,8 @@ _ws.readyState
 
 | File | Lines | Description |
 |------|-------|-------------|
-| `web-win.el` | 69 | Window system registration, initialization method, 60Hz timer hook. |
+| `web-win.el` | ~240 | Window system registration, init method, 60Hz timer hook, selection backend; enables `pixel-scroll-precision-mode` + smooth-scroll keybinds (§11c). |
+| `web-fx.el` | ~210 | Motion-effect hints (jump beacons, isearch flashes, smooth scroll-to-definition) sent to the client over `web-tldraw-send` (§11c). |
 
 ### WebSocket Proxy (`web-display/`)
 
@@ -1003,6 +1004,7 @@ _ws.readyState
 | `components/frame.js` | ~26 | Sorts and renders all windows. |
 | `components/window.js` | ~22 | Renders rows 0..h, absolute positioning with `ch`/`em` units. |
 | `components/line.js` | ~90 | Renders runs as styled `<span>`s, splits at cursor column, handles cursor types. |
+| `src/fx.js` | ~250 | `FxOverlay`: transparent effects canvas (above text, below caret), self-stopping rAF loop; comet trail / jump beacon / flash primitives (§11c). |
 
 ### Legacy / Unused (kept for reference)
 
@@ -1039,6 +1041,201 @@ The board content itself lives in an Emacs buffer (a `.tldr` JSON
 snapshot), not in `frame_update`; an epoch counter prevents echo loops.
 
 ---
+
+## 11c. Smooth scrolling & motion effects
+
+The browser renders pixels, so the display escapes two limits of Emacs's
+own model: line-quantized scrolling and instantaneous navigation.
+
+**Subpixel + momentum scrolling.** Emacs already has the right primitive —
+`pixel-scroll-precision-mode` sets a window *vscroll* (a pixel offset on the
+top line) and over-renders the partial top/bottom rows. The backend already
+transmits each row's true `pixel_y` (`= row->y`, negative for a partially
+scrolled-off top row) and the client clips each window to its rect, so those
+partial rows render correctly with **no overscan hack**. Two changes light
+it up:
+
+- **webterm.c** builds the `WHEEL_EVENT`'s `arg` as
+  `list3(lines, Qt, pixels)` (both the async and synchronous scroll paths).
+  `make_lispy_event`'s `CONSP(arg)` branch then yields `(nth 4 event) =
+  (t . PIXELS)`, which is exactly what `pixel-scroll-precision` reads. A
+  plain-fixnum arg lands at `(nth 3)` and leaves `(nth 4)` nil, so precision
+  mode silently falls back to whole-line `mwheel-scroll` — that was the
+  blocker. `pixels = -dy` (browser `deltaY>0` = toward buffer end).
+- **web-win.el** enables `pixel-scroll-precision-mode` (with momentum +
+  page interpolation) and remaps `scroll-up/down-command` to
+  `pixel-scroll-interpolate-{down,up}` for smooth `C-v`/`M-v`. On a Mac
+  trackpad, momentum additionally comes free from the OS's synthetic
+  wheel-event stream.
+- **input.js** keeps the sub-pixel wheel remainder (the wire delta is an
+  integer) and scales `DOM_DELTA_LINE`/`PAGE` mouse wheels to pixels.
+- **renderEngine.js**, on any window whose top line has `pixel_y < 0` (the
+  signature of an active vscroll), **clears the whole window to background
+  and repaints every row from scratch**. Clearing `lineGens` alone is not
+  enough: under vscroll every row's `pixel_y` shifts each frame, so a row
+  repainted over the previous frame leaves a `vscroll`-px sliver of its old
+  position behind — the "overlapping lines" artifact. The index-based erase
+  heuristics can't track the moving index→pixel mapping, so the per-window
+  background clear is the fix (cheap — one `fillRect`; the window is
+  changing wholesale anyway).
+
+**Uniform whole-window glide (suppressing the scroll optimizations).** A
+subtler artifact: Emacs's row-reuse optimizations bit-blit a block of
+unchanged rows (emitted to the client as a `scroll` message / translated
+`pixel_y`) and redraw only the few changed rows. The redrawn rows pick up
+the new sub-line `vscroll` offset, but the bit-blitted block moves by whole
+lines — so during a smooth scroll the bulk of the window steps/flickers
+while only the cursor's line glides. There are two such optimizations and
+both must be suppressed during a precision scroll:
+
+- **`scrolling_window`** (dispnew.c, gated by `desired_matrix->no_scrolling_p`).
+  `web_update_window_begin` (webterm.c) sets `no_scrolling_p` whenever the
+  window has a pixel vscroll — this hook runs before the `scrolling_window`
+  check in `update_window`, so the bit-blit is skipped and every row
+  redraws at its true `pixel_y`.
+- **`try_window_id` / `try_window_reusing`** (xdisp.c) — these call
+  `scroll_run_hook` directly, bypassing `no_scrolling_p`, and run at the
+  *line-boundary* frames where `vscroll` momentarily returns to 0. They are
+  disabled via the C debug specials `inhibit-try-window-id` /
+  `inhibit-try-window-reusing`, bound (with `dlet`) only *around* the
+  precision-scroll functions (`pixel-scroll-precision`,
+  `…-interpolate`, `pixel-scroll-start-momentum`) in web-win.el. All scroll
+  redisplay happens inside those functions (via `sit-for`/`redisplay`), so
+  the binding covers exactly the scroll frames and **ordinary typing keeps
+  the optimizations and their low latency.** Verified: every scroll frame
+  (sub-line and line-boundary alike) has a single uniform inter-row pixel
+  step.
+
+**Motion FX overlay.** `web-client/src/fx.js` adds a transparent
+`FxOverlay` canvas stacked above the text (z-3) and below the caret (z-4),
+with a **self-stopping rAF loop** (0% CPU when idle). It draws three
+cosmetic primitives: a tapering cursor *comet trail*, a jump *beacon*
+pulse, and a *flash* highlight. `FrameRenderer` owns it:
+
+- The comet trail + CSS *caret glide* are client-only, driven from
+  `renderCursor` (which already computes the caret pixel each update); a
+  large jump snaps the caret (`transition:none`) and fires a beacon instead
+  of dragging it across the screen. Trail/beacon color = the themeable
+  `--cursor-accent` CSS var, defaulting to the frame foreground.
+- Beacons (xref/imenu/next-error landings), isearch match flashes, and
+  **smooth scroll-to-definition** are driven from Emacs by
+  `lisp/web-fx.el`. It needs no new C primitive: it reuses the generic
+  `web-tldraw-send` line sender to emit `{"type":"fx", ...}` messages, which
+  `state.js` queues onto `pendingFx` for the renderer to draw. Coordinates
+  are **absolute frame pixels** computed in elisp (`posn-at-point` +
+  `window-inside-pixel-edges`) — the same space as the text canvas, so the
+  client draws them verbatim with no window-id/row mapping. Smooth jumps use
+  `pixel-scroll-precision-interpolate` (rewind to the pre-jump
+  `window-start`, animate to the new one), gated by conservative guards
+  (same buffer/window, bounded distance, not in minibuffer/macro/isearch).
+
+The FX layer is deliberately separate from the text canvas so it can never
+perturb that canvas's pixel-overlap / dirty-tracking invariants.
+
+**Page scroll (C-v / M-v).** Remapped to `web-scroll-up-page` /
+`web-scroll-down-page` (web-win.el), which call Emacs's own
+`pixel-scroll-precision-interpolate` for a whole-page glide, then
+`web--snap-vscroll` snaps the leftover fractional vscroll to the nearest
+line boundary, then `force-window-update`. **History/caution:** hand-rolled
+animation loops were tried and reverted — an ease-in-out *lerp* and a
+fixed-step *smoothstep* loop both corrupted the client render (stale/offset
+rows: the animated `web--settle`'s intermediate vscroll-0 frames reuse rows;
+big mid-scroll deltas trip Emacs's row-reuse path), and a `split-scroll`
+advice (split large per-event deltas, redisplay between) caused 100% CPU
+hangs in heavy LSP buffers. The built-in interpolation is linear-in-time but
+clean and stable, which is what shipped.
+
+**Trackpad / wheel settle.** Precision wheel scrolling (and its momentum)
+also leaves a fractional vscroll. `web--vscroll-snap-on-idle` — advised onto
+the low-level `pixel-scroll-precision-scroll-down/up` primitives, which
+wheel events, inertia, and C-v all funnel through — (re)arms a 0.12 s idle
+timer on every pixel scroll, so once *all* scrolling (including momentum)
+stops it forces a **redisplay while still vscrolled** (a nonzero vscroll
+makes Emacs bail out of both row-reuse paths, so it resends *every* visible
+row — restoring any the client dropped mid-scroll), then snaps the vscroll
+to a line boundary in one step and `force-window-update`s.  (`force-window-
+update` alone can't restore a dropped row: Emacs's matrix still has it, so it
+never redraws it — only a vscrolled redisplay forces the full resend.)
+Without this the leftover vscroll would reset on the next command (shifting
+the buffer) with a partial redisplay (stale client rows). Trackpad momentum
+comes from the OS's synthetic wheel stream; `pixel-scroll-precision-use-
+momentum` adds inertia for plain mouse wheels. Without the
+snap, redisplay zeroes the residual vscroll on the *next* command (xdisp.c)
+— the whole buffer jumps a few pixels when you next move the cursor; without
+the `force-window-update`, far rows aren't resent and only repaint when
+their gen later bumps. The **client** complements this: `drawWindow`
+keeps full-repainting a window for ~280 ms *after* scrolling stops
+(`lastScrollAt`), because the settle frame renders via the gen-cache, which
+can skip rows last painted at a mid-scroll interpolated position — leaving
+them visually stale on the canvas (the state is already correct) until the
+extra repaints catch the canvas up. The same `lastScrollAt` gates the FX
+cursor trail: it is suppressed while a window is scrolling, so point being
+pushed to stay on-screen (mouse wheel / C-v) doesn't smear a trail at the
+window edge.
+
+**Interpolation cadence — critical for the web backend.**
+`pixel-scroll-precision-interpolate` calls `(redisplay)` every
+`pixel-scroll-precision-interpolation-between-scroll` seconds; the default
+**0.001 s (≈1000 fps)** is fine for a native frame buffer but *floods* the
+web backend, where each redisplay serializes the whole window to JSON and
+ships it over the WebSocket. web-win.el clamps it to **0.016 s (~60 fps)** —
+the difference between a page scroll sending ~19 frames vs ~250 (which lagged
+typing and the FX trail along with the scroll). Note also: the
+`inhibit-try-window-id` / `inhibit-try-window-reusing` specials are
+`#ifdef GLYPH_DEBUG` (off in this build), so they're unbound and can't be
+used to suppress those optimizations — only `no_scrolling_p` (above) is
+available; the transition-frame reuse is left as-is.
+
+**Recenter (C-l).** `recenter-top-bottom` is advised `:after` with
+`web-fx--smooth-after-jump`, so C-l animates the recenter (rewind to the
+old `window-start`, `pixel-scroll-precision-interpolate` to the new). The
+advice fn must take `&rest _` — `:after` advice passes the command's prefix
+arg, and a zero-arg version throws `wrong-number-of-arguments` on every C-l.
+A recenter that moves less than ~half a line (point already near centre)
+won't visibly animate — nothing to move.
+
+**Perf logging.** `web-client/src/perf.js` keeps always-on ring buffers of
+per-frame render time, FX-tick time, and `frame_update` arrival rate,
+surfaced via `window.__perfSummary()` / `window.__perfReset()` on the debug
+REPL (port+1) — e.g. press C-v, then `__perfSummary()` to see frames-from-
+Emacs/s and render cost. A `frames_per_s ≫ 60` reading means the server is
+over-sending. Diagnose stale rows with `window.__rowHashes()` (per-row pixel
+hash, diffed across a no-scroll cursor move) and canvas snapshots via
+`_renderer.canvas.toDataURL` (chunk it over the debug REPL — the dataURL is
+too large for one line; see the `/tmp/snap.py`/`fetch.py` pattern).
+
+### 11c.1 Known limitation — scroll/cursor row divergence (UNSOLVED)
+
+A residual artifact remains: **a trackpad scroll *down* that pushes the
+cursor onto the top row** leaves "refresh weirdness" — a row goes
+stale/missing and only repaints when the cursor next moves over it.
+(Scroll-up, or scrolls that don't move the cursor, are fine.)
+
+Root cause is the architectural tension catalogued in the
+rendering-artifact postmortem (PREEMPTIVE-THREADS-ARCHITECTURE.md): **the
+client keys lines by Emacs matrix *row index* but paints them at `pixel_y`,
+and the two diverge under scrolls.** When a scroll-down pushes point to the
+window top, the cursor's row gets a translated `pixel_y` that transiently
+overlaps a neighbour; `_dedupeOverlaps` (state.js) evicts one of them, and
+because Emacs's glyph matrix still believes the row is displayed it never
+resends it, so the client is left short a row. The settle-time
+"redisplay-while-vscrolled" full resend (above) repairs it *at rest*, but
+the *interactive* repaint as you then move the cursor still flickers.
+
+Things tried that did **not** fully fix it (so don't re-attempt blindly):
+- `force-window-update` on settle — Emacs won't redraw a row its matrix
+  thinks is current, so the dropped row isn't resent.
+- Protecting the cursor's row in `_dedupeOverlaps` — backfired: it then
+  *kept* a stale cursor row, producing "every line offset by one" after C-v.
+- Hand-rolled eased scroll loops / per-event delta splitting — corrupted
+  the render and/or hung (see Page scroll above).
+
+A real fix needs the **client to reconcile rows by `pixel_y` rather than by
+matrix index** (or the backend to stamp each row with a scroll-generation so
+the client can discard cross-generation mixes), i.e. a deliberate rework of
+the scroll/merge path in state.js — not another point patch. Left as future
+work; the rest of scrolling (C-v/M-v, C-l, scroll-up, wheel without a cursor
+push) is clean.
 
 ## 12. Future Work
 

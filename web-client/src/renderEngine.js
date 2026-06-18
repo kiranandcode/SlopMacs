@@ -3,6 +3,8 @@
    cached glyphs, and direct painting outside React.  */
 
 import { FONT_FAMILY, FONT_SIZE } from './measure.js';
+import { FxOverlay } from './fx.js';
+import { recordRender } from './perf.js';
 
 const CURSOR_CLASS = ['cursor-box', 'cursor-hollow', 'cursor-bar', 'cursor-hbar'];
 
@@ -173,6 +175,17 @@ export class FrameRenderer {
     root.style.setProperty('--char-w', metrics.charW + 'px');
     root.style.setProperty('--char-h', metrics.charH + 'px');
 
+    /* Cosmetic motion-effects overlay (cursor trail, jump beacons,
+       search flashes).  Kept entirely separate from the text canvas so
+       it can never corrupt its pixel-overlap invariants.  */
+    this.fx = new FxOverlay(root);
+    /* Cursor-move tracking for the comet trail / caret glide.  */
+    this.lastCursorPx = new Map();   /* win.id -> {x, y} */
+    /* When each window last scrolled (vscroll or scroll delta).  Used to
+       suppress the cursor trail when point moves only because the view
+       scrolled (mouse wheel / C-v), not from real navigation.  */
+    this.lastScrollAt = new Map();   /* win.id -> performance.now() */
+
     this.resizeObserver = new ResizeObserver(() => {
       this.fullRepaint = true;
       if (this.lastState) this.schedule(this.lastState);
@@ -186,6 +199,7 @@ export class FrameRenderer {
     this.resizeObserver.disconnect();
     this.menuBars.clear();
     this.cursors.clear();
+    if (this.fx) this.fx.destroy();
     this.root.textContent = '';
   }
 
@@ -233,11 +247,13 @@ export class FrameRenderer {
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.ctx.imageSmoothingEnabled = false;
     this.atlas = new GlyphAtlas(this.metrics);
+    if (this.fx) this.fx.resize(width, height, dpr);
     this.fullRepaint = true;
     return true;
   }
 
   render (state) {
+    const _perfT0 = performance.now();
     this.ensureCanvasSize();
     this.root.style.backgroundColor = state.defaultBg;
     this.root.style.color = state.defaultFg;
@@ -264,9 +280,11 @@ export class FrameRenderer {
 
     /* Scrolled windows need full repaint since row content shifted.  */
     if (state.pendingScrolls.length > 0) {
+      const _now = performance.now();
       for (const scroll of state.pendingScrolls) {
         const lineGens = this.renderedLineGens.get(scroll.windowId);
         if (lineGens) lineGens.clear();
+        this.lastScrollAt.set(scroll.windowId, _now);
       }
       state.pendingScrolls.length = 0;
     }
@@ -324,6 +342,17 @@ export class FrameRenderer {
     for (const id of this.renderedCursorGens.keys()) {
       if (!state.windows.has(id)) this.renderedCursorGens.delete(id);
     }
+    for (const id of this.lastCursorPx.keys()) {
+      if (!state.windows.has(id)) this.lastCursorPx.delete(id);
+    }
+
+    /* Drain Emacs-hinted FX events (beacons, search flashes).  */
+    if (state.pendingFx && state.pendingFx.length > 0) {
+      for (const ev of state.pendingFx) this.applyFxEvent(ev);
+      state.pendingFx.length = 0;
+    }
+
+    recordRender(performance.now() - _perfT0);
   }
 
   drawWindow (win, state, full, visibleWidgets) {
@@ -343,10 +372,50 @@ export class FrameRenderer {
       this.renderedLineGens.set(win.id, lineGens);
     }
 
+    /* Active vscroll (subpixel/precision scrolling) shifts every row's
+       pixel_y each frame, so the matrix-row-index → pixel mapping that the
+       gen-cache relies on diverges from row*charH.  A negative top-row
+       pixel_y is the signature of a nonzero Emacs vscroll (the top line is
+       partially scrolled above the window top).  Force a full window
+       repaint while scrolling so no stale/ghost rows survive — the window
+       is changing wholesale anyway.
+
+       Keep full-repainting for a short window AFTER scrolling stops too:
+       the settle frame (vscroll snaps back to 0) renders via the
+       gen-cache, which can skip rows that were last painted at an
+       interpolated (mid-scroll) position — leaving them visually stale on
+       the canvas until their gen happens to bump (e.g. the cursor passes).
+       State is already correct; this just lets the canvas catch up.  */
+    const _now = performance.now();
+    const wasScrolling = _now - (this.lastScrollAt.get(win.id) || 0) < 280;
+    let vscrolled = false;
+    for (const ld of win.lines.values()) {
+      if (!ld.mode_line && Number.isFinite(ld.pixel_y) && ld.pixel_y < 0) {
+        vscrolled = true;
+        break;
+      }
+    }
+    if (vscrolled) this.lastScrollAt.set(win.id, _now);
+    const scrollRepaint = vscrolled || wasScrolling;
+    if (scrollRepaint) lineGens.clear();
+
     ctx.save();
     ctx.beginPath();
     ctx.rect(x, y, w, h);
     ctx.clip();
+
+    /* While vscrolled, every row's pixel_y shifts each frame.  Simply
+       repainting rows over the previous frame leaves slivers where each
+       row used to be (a row that moved up by `vscroll' px leaves its
+       bottom `vscroll' px behind) — that is the "overlapping lines"
+       artifact.  The index-based erase heuristics below can't track the
+       moving index→pixel mapping, so clear the whole window to
+       background and repaint every row from scratch.  Cheap (one
+       fillRect), and the window is changing wholesale anyway.  */
+    if (scrollRepaint) {
+      ctx.fillStyle = state.defaultBg;
+      ctx.fillRect(x, y, w, h);
+    }
 
     /* Erase pixel strips vacated by evicted ghost lines (see
        state.js pixel-overlap eviction); their painted pixels live at
@@ -692,11 +761,71 @@ export class FrameRenderer {
     const lineData = win.lines.get(cursor.row);
     const geom = this.lineGeometry(win, cursor.row, lineData);
     const cursorX = geom.x + cursor.col * m.charW;
+
+    /* Caret motion feedback: comet trail + glide on small moves, snap +
+       beacon on big jumps.  Centre point for the trail/beacon.  The
+       minibuffer/echo-area window is exempt: the active caret hops there
+       on every keystroke of a minibuffer command (isearch, consult, M-x),
+       which would smear trails between the buffer and the minibuffer.  */
+    const cx = cursorX + m.charW / 2;
+    const cy = geom.y + m.charH / 2;
+    const prev = this.lastCursorPx.get(win.id);
+    const accent = this._accent();
+    /* Suppress the trail/beacon when point only moved because the view
+       scrolled (mouse wheel / C-v pushing point to stay on-screen) —
+       otherwise the caret snaps to the window edge and smears a trail
+       there.  lastCursorPx is still updated below, so the first genuine
+       move after scrolling settles trails normally.  */
+    const scrolling =
+      performance.now() - (this.lastScrollAt.get(win.id) || 0) < 250;
+    if (prev && !win.mini && !scrolling) {
+      const dist = Math.hypot(cx - prev.x, cy - prev.y);
+      if (dist > 1) {
+        this.fx.cursorTrail(cx, cy, accent);
+        if (dist > m.charH * 6) {
+          /* Long jump: don't drag the caret across the screen; snap it
+             and pulse a beacon on the destination.  */
+          node.style.transition = 'none';
+          this.fx.beacon(cx, cy, accent);
+        } else {
+          node.style.transition = '';
+        }
+      }
+    }
+    this.lastCursorPx.set(win.id, { x: cx, y: cy });
+
     node.style.transform = 'translate3d('
       + Math.round(cursorX) + 'px,'
       + Math.round(geom.y) + 'px,0)';
     node.style.width = Math.ceil(m.charW) + 'px';
     node.style.height = Math.ceil(m.charH) + 'px';
+  }
+
+  /* Trail/beacon colour: the themeable --cursor-accent CSS var if set,
+     else the frame foreground (always contrasts with the background).  */
+  _accent () {
+    if (this._accentCSS === undefined) {
+      this._accentCSS = (getComputedStyle(this.root)
+        .getPropertyValue('--cursor-accent') || '').trim();
+    }
+    if (this._accentCSS) return this._accentCSS;
+    return (this.lastState && this.lastState.defaultFg) || '#cdd6f4';
+  }
+
+  /* Apply an Emacs-hinted FX event (web-fx.el → web-tldraw-send).
+     Coordinates are absolute frame pixels (computed in elisp from
+     posn-at-point + window-pixel-edges), the same space as the text
+     canvas — so no window-id/row mapping is needed here.  */
+  applyFxEvent (ev) {
+    if (!this.fx) return;
+    const m = this.metrics;
+    const accent = ev.color || this._accent();
+    const h = ev.h || m.charH;
+    if (ev.effect === 'beacon') {
+      this.fx.beacon((ev.x || 0) + m.charW / 2, (ev.y || 0) + h / 2, accent);
+    } else if (ev.effect === 'flash') {
+      this.fx.flash(ev.x || 0, ev.y || 0, ev.w || m.charW, h, accent);
+    }
   }
 
   renderMenuBar (win) {

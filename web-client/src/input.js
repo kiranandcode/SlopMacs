@@ -317,14 +317,34 @@ export class InputHandler {
   }
 
   _setupScroll () {
+    this._scrollResidualX = 0;
+    this._scrollResidualY = 0;
     this._on(window, 'wheel', (e) => {
       swallow(e);
       const rect = this.el.getBoundingClientRect();
       const inside = e.clientX >= rect.left && e.clientX < rect.right
         && e.clientY >= rect.top && e.clientY < rect.bottom;
       if (!inside) return;
-      let dx = Math.round(e.deltaX);
-      let dy = Math.round(e.deltaY);
+
+      /* Normalize wheel deltas to pixels.  Trackpads report
+         DOM_DELTA_PIXEL, but many mice report DOM_DELTA_LINE (deltaY in
+         lines) or DOM_DELTA_PAGE — pixel-scroll-precision-mode needs real
+         pixels, so scale those up to the measured line/page height.  */
+      const m = measureFont();
+      let unitX = 1, unitY = 1;
+      if (e.deltaMode === 1) { unitX = m.charW; unitY = m.charH; }
+      else if (e.deltaMode === 2) { unitX = rect.width; unitY = rect.height; }
+
+      /* Carry the sub-pixel remainder so fine trackpad deltas accumulate
+         instead of rounding to zero (the wire delta is an integer).  */
+      this._scrollResidualX += e.deltaX * unitX;
+      this._scrollResidualY += e.deltaY * unitY;
+      let dx = Math.trunc(this._scrollResidualX);
+      let dy = Math.trunc(this._scrollResidualY);
+      this._scrollResidualX -= dx;
+      this._scrollResidualY -= dy;
+      if (dx === 0 && dy === 0) return;
+
       dx = Math.max(-32768, Math.min(32767, dx));
       dy = Math.max(-32768, Math.min(32767, dy));
       this._send({

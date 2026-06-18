@@ -76,6 +76,146 @@ DISPLAY may be set to the name of a display that will be initialized."
 (cl-defmethod handle-args-function (args &context (window-system web))
   (x-handle-args args))
 
+(defun web--snap-vscroll (win)
+  "Snap WIN's vscroll to 0 at the nearest line boundary.
+A precision scroll leaves a fractional vscroll, which redisplay resets
+to 0 on the *next* command (xdisp.c) — seen as the whole buffer jumping
+a few pixels when you next move the cursor.  Doing the snap here, as
+part of the scroll gesture, pre-empts that (≤ half a line, so barely
+visible)."
+  (let ((vs (window-vscroll win t))
+        (lh (max 1 (frame-char-height))))
+    (when (and (integerp vs) (> vs 0))
+      (if (< vs (/ lh 2))
+          ;; Most of the top line is visible: just drop the vscroll
+          ;; (content settles down by VS px).
+          (set-window-vscroll win 0 t)
+        ;; Most of it is scrolled off: advance one line (content settles
+        ;; up by LH-VS px).
+        (set-window-start
+         win (save-excursion (goto-char (window-start win))
+                             (vertical-motion 1) (point))
+         t)
+        (set-window-vscroll win 0 t)))))
+
+(defcustom web-scroll-page-lerp 0.20
+  "Fraction of the remaining distance each C-v / M-v scroll step covers.
+Lower = a longer, glidier deceleration; higher = snappier."
+  :type 'number :group 'web-fx)
+
+(defcustom web-scroll-page-tick 0.006
+  "Seconds between C-v / M-v scroll steps."
+  :type 'number :group 'web-fx)
+
+(defun web--settle (win _advance-test lh)
+  "Soft-land WIN's leftover vscroll onto the nearest line boundary.
+A lerp-to-zero so the scroll *decelerates* into rest instead of snapping
+abruptly.  Direction is derived from the current vscroll."
+  (let ((vs (window-vscroll win t)))
+    (when (and (integerp vs) (> vs 0))
+      (let* ((advance (>= vs (/ lh 2)))
+             (rem (if advance (- lh vs) vs)))
+        (catch 'web--settled
+          (while (> rem 1)
+            (let ((d (max 1 (round (* rem 0.34)))))
+              (setq rem (- rem d))
+              (condition-case nil
+                  (if advance (pixel-scroll-precision-scroll-down d)
+                    (pixel-scroll-precision-scroll-up d))
+                ((beginning-of-buffer end-of-buffer) (throw 'web--settled nil)))
+              (redisplay t)
+              (sleep-for 0.009))))
+        (web--snap-vscroll win)))))
+
+(defun web--scroll-page (dir)
+  "Smoothly scroll DIR pages (1 = down/C-v, -1 = up/M-v).
+A lerp-to-target glide: each step covers `web-scroll-page-lerp' of the
+remaining distance (capped to ~1 line), so the motion starts at full
+speed and *decelerates* into a soft stop — momentum, not a flat linear
+glide.  Then `web--settle' eases the leftover vscroll to a line boundary
+(rest = vscroll 0, so a later cursor move neither shifts the buffer nor
+leaves stale rows), and `force-window-update' makes the client repaint
+the settled frame in full.
+
+Per-step deltas are kept small (≈1 line): one redisplay that scrolls
+several lines at once trips Emacs's row-reuse path and corrupts the
+client render (overlapping/missing rows) — this is why the delta is
+capped, not just eased.  The frame output coalesces, so the many small
+redisplays still deliver only ~a dozen frames over the wire."
+  (let* ((win (selected-window))
+         (lh (max 1 (frame-char-height)))
+         (lines (max 1 (- (floor (window-text-height win t) lh)
+                          next-screen-context-lines)))
+         (px (* dir lines lh)))             ; signed page distance
+    ;; Use Emacs's own smooth interpolation (clean + stable; the
+    ;; hand-rolled lerp/settle variants corrupted the client render).
+    (condition-case nil
+        (pixel-scroll-precision-interpolate (- px) win 1)
+      ((beginning-of-buffer end-of-buffer) nil))
+    (web--snap-vscroll win)
+    (force-window-update win)))
+
+(defun web--split-scroll (orig delta &rest args)
+  "Around-advice for the precision scroll primitives: scroll DELTA in
+≤1-line chunks with a redisplay between each.  A single redisplay that
+scrolls several lines at once trips Emacs's row-reuse path and corrupts
+the web client's render (overlapping/missing rows) — which a fast
+trackpad flick or wheel `click' (large per-event delta) would otherwise
+do.  Small deltas (high-res trackpad, C-v's own loop) pass straight
+through."
+  (let ((maxd (max 6 (- (frame-char-height) 2))))
+    (if (or (not (integerp delta)) (<= delta maxd))
+        (apply orig delta args)
+      (let ((remaining delta))
+        (while (> remaining 0)
+          (let ((d (min maxd remaining)))
+            (apply orig d args)
+            (setq remaining (- remaining d))
+            (when (> remaining 0) (redisplay t))))))))
+
+(defvar web--vscroll-snap-timer nil
+  "Idle timer that snaps a leftover trackpad/wheel vscroll after a pause.")
+
+(defun web--vscroll-snap-on-idle (&rest _)
+  "Schedule a snap of the selected window's vscroll once scrolling pauses.
+A trackpad/wheel precision scroll leaves a fractional vscroll; if left,
+the next command resets it (shifting the buffer) with a partial redisplay
+that leaves the web client stale.  When scrolling settles (Emacs goes
+idle), snap to the nearest line boundary and force a full repaint, the
+same way C-v/M-v do."
+  (when web--vscroll-snap-timer (cancel-timer web--vscroll-snap-timer))
+  (let ((win (selected-window)))
+    (setq web--vscroll-snap-timer
+          (run-with-idle-timer
+           0.12 nil
+           (lambda ()
+             (setq web--vscroll-snap-timer nil)
+             (when (and (window-live-p win)
+                        (not (window-minibuffer-p win)))
+               ;; Force a full RESEND while still vscrolled: with a nonzero
+               ;; vscroll Emacs can't reuse rows (no_scrolling_p +
+               ;; try_window_id bails), so every visible row is redrawn and
+               ;; resent — restoring any row the client dropped mid-scroll
+               ;; (e.g. the cursor's row when a scroll pushes it to the top
+               ;; and its translated pixel_y transiently overlapped a
+               ;; neighbour).  `force-window-update' alone can't do this:
+               ;; Emacs's matrix still has the row, so it never redraws it.
+               (when (> (window-vscroll win t) 0)
+                 (redisplay t)
+                 ;; …then snap the leftover vscroll to a line boundary.
+                 (web--snap-vscroll win))
+               (force-window-update win)))))))
+
+(defun web-scroll-up-page ()
+  "Smoothly scroll down by a whole-line page (like \\[scroll-up-command])."
+  (interactive)
+  (web--scroll-page 1))
+
+(defun web-scroll-down-page ()
+  "Smoothly scroll up by a whole-line page (like \\[scroll-down-command])."
+  (interactive)
+  (web--scroll-page -1))
+
 ;; Start the 60Hz redisplay timer after init completes.
 ;; This must not run during init or byte-compilation of user packages
 ;; will crash due to SIGALRM interference.
@@ -87,6 +227,54 @@ DISPLAY may be set to the name of a display that will be initialized."
             ;; redisplay.  Each blink tick triggers redisplay_tab_bar
             ;; which runs full BiDi resolution on the tab bar string.
             (blink-cursor-mode -1)
+            ;; Smooth, subpixel scrolling.  The web backend transmits each
+            ;; row's true pixel_y (= row->y) and the client clips windows,
+            ;; so Emacs's own vscroll-based precision scrolling renders the
+            ;; partial top/bottom rows correctly.  The wheel event carries a
+            ;; (t . PIXELS) cons (webterm.c), which is what
+            ;; `pixel-scroll-precision' reads to drive vscroll.
+            (require 'pixel-scroll)
+            (setq pixel-scroll-precision-use-momentum t
+                  pixel-scroll-precision-interpolate-page t
+                  pixel-scroll-precision-large-scroll-height 40.0
+                  pixel-scroll-precision-interpolation-total-time 0.22
+                  ;; CRITICAL for the web backend: the interpolation loop
+                  ;; calls `(redisplay)' every `between-scroll' seconds,
+                  ;; and each web redisplay serializes the whole window to
+                  ;; JSON and ships it over the WebSocket.  The 0.001s
+                  ;; (1ms = ~1000fps) default floods the pipeline and makes
+                  ;; C-v/M-v lag badly.  ~100fps is smooth and the canvas
+                  ;; render is only ~0.8ms, so the pipeline keeps up.
+                  pixel-scroll-precision-interpolation-between-scroll 0.010)
+            (pixel-scroll-precision-mode 1)
+            ;; Smooth keyboard page scrolling.  This Emacs is web-only, so a
+            ;; global remap is safe.
+            (global-set-key [remap scroll-up-command]
+                            #'web-scroll-up-page)
+            (global-set-key [remap scroll-down-command]
+                            #'web-scroll-down-page)
+            ;; A bit of inertia for wheel/trackpad scrolling.
+            (setq pixel-scroll-precision-momentum-seconds 1.2
+                  pixel-scroll-precision-momentum-min-velocity 10.0)
+            ;; After a trackpad/wheel scroll settles, snap the leftover
+            ;; fractional vscroll to a line boundary + full repaint, so a
+            ;; later cursor move neither shifts the buffer nor leaves the
+            ;; client showing stale rows (same fix C-v/M-v do inline).
+            ;; Advise the low-level scroll primitives — wheel events,
+            ;; momentum, and C-v all funnel through them — so the snap is
+            ;; (re)scheduled by *every* pixel scroll and only fires once all
+            ;; scrolling, including inertia, has stopped.
+            (dolist (fn '(pixel-scroll-precision-scroll-down
+                          pixel-scroll-precision-scroll-up))
+              (advice-add fn :after #'web--vscroll-snap-on-idle))
+            ;; Flashy motion effects: jump beacons, isearch flashes, and
+            ;; smooth scroll-to-definition (the cursor comet trail and
+            ;; caret glide are client-only).  Require here, at runtime:
+            ;; web-win.el's top level runs at DUMP time (noninteractive),
+            ;; so a top-level `require' would be skipped.
+            (ignore-errors
+              (require 'web-fx)
+              (web-fx-setup))
             ;; Ensure *scratch* has initial-scratch-message.
             ;; This is normally done by command-line-1 in startup.el, but
             ;; that code may not run when the web backend auto-detects
@@ -212,6 +400,9 @@ CODE through `web-eval-javascript'."
            (> (length web-clipboard-text) 0))))
 
 ;; Load web-widgets (skip during dump when noninteractive).
+;; web-fx is required at runtime from the after-init-hook above, not
+;; here: this top level also runs at dump time, where the require would
+;; be skipped and never retried.
 (unless noninteractive
   (require 'web-widgets))
 

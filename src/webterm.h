@@ -195,6 +195,7 @@ struct web_display_info
       bool active;
       bool has_complete_lines;  /* Any after_update_window_line calls?  */
       bool is_menu_bar;         /* True for the menu bar pseudo-window.  */
+      bool is_minibuffer;       /* True for the minibuffer/echo-area window.  */
       char webview_url[512];    /* Buffer-local `web-webview-url' of the
                                    window's buffer; non-empty means the
                                    client overlays an iframe over the

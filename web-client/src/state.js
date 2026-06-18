@@ -1,6 +1,7 @@
 /* Frame state manager for Emacs web display.  */
 
 import { measureFont } from './measure.js';
+import { recordFrameMsg } from './perf.js';
 
 export class FrameState {
   constructor () {
@@ -19,6 +20,9 @@ export class FrameState {
     this.hasFirstFrame = false;
     this.pendingScrolls = [];
     this.pendingClears = [];
+    /* Emacs-hinted visual effects (web-fx.el): drained by the renderer,
+       which owns the FX overlay.  */
+    this.pendingFx = [];
     this._clearPending = false;
     /* tldraw board control channel.  Board components subscribe via
        onBoardMessage and receive every inbound tldraw_* message; the
@@ -78,6 +82,7 @@ export class FrameState {
         }
         break;
       case 'frame_update':
+        recordFrameMsg();
         this._applyFrameUpdate(msg);
         break;
       case 'scroll':
@@ -104,6 +109,12 @@ export class FrameState {
           this.colorScheme = msg.colorScheme;
         }
         this._notifyBoard(msg);
+        break;
+      case 'fx':
+        /* Cosmetic effect hint from web-fx.el.  Coordinates are absolute
+           frame pixels; the renderer converts none of it, just draws.  */
+        this.pendingFx.push(msg);
+        this._notify(false);
         break;
       case 'menu':
         this.activeMenu = msg;
@@ -242,7 +253,7 @@ export class FrameState {
            staleness) can leave two lines claiming the same pixels,
            which renders as ghost copies or content stomped by stale
            empties.  Enforce it globally after each merge.  */
-        this._dedupeOverlaps(lines, vacated);
+        this._dedupeOverlaps(lines, vacated, cursor ? cursor.row : null);
 
         this.windows.set(wdata.id, {
           id: wdata.id,
@@ -260,6 +271,12 @@ export class FrameState {
           menuBar: wdata.menu_bar !== undefined
             ? !!wdata.menu_bar
             : (old ? old.menuBar : false),
+          /* Minibuffer/echo-area window: the FX overlay skips its cursor
+             trail/beacon (the active caret hops here on every keystroke
+             during minibuffer commands, which would smear).  */
+          mini: wdata.mini !== undefined
+            ? !!wdata.mini
+            : (old ? old.mini : false),
           /* Embedded browser view: URL overlaid as an iframe over the
              window body.  Emacs always sends the field ('' = none), so
              absence means "window not in this update — keep".  */
@@ -295,7 +312,7 @@ export class FrameState {
      Walk lines sorted by pixel_y; on overlap keep the newer line
      (higher gen) and record the loser's strip in VACATED so the
      renderer erases its pixels where they actually are.  */
-  _dedupeOverlaps (lines, vacated) {
+  _dedupeOverlaps (lines, vacated, cursorRow) {
     const sorted = [...lines.entries()]
       .filter(([, l]) => !l.mode_line && Number.isFinite(l.pixel_y))
       .sort((a, b) => a[1].pixel_y - b[1].pixel_y);
@@ -376,7 +393,7 @@ export class FrameState {
 
     /* Translation can land moved rows on unmoved ones.  */
     const vacated = old.vacated || [];
-    this._dedupeOverlaps(lines, vacated);
+    this._dedupeOverlaps(lines, vacated, cursor ? cursor.row : null);
 
     this.windows.set(msg.window_id, {
       ...old,

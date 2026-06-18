@@ -268,6 +268,7 @@ json_get_window (struct json_frame_state *js, EMACS_INT id)
   jw->active = true;
   jw->has_complete_lines = false;
   jw->is_menu_bar = false;
+  jw->is_minibuffer = false;
   return jw;
 }
 
@@ -492,6 +493,19 @@ web_update_window_begin (struct window *w)
   struct web_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
   struct json_frame_state *js = &dpyinfo->json_state;
 
+  /* Smooth (sub-line) scrolling: while the window carries a pixel
+     vscroll, suppress the redisplay scroll optimization
+     (`scrolling_window' / `scroll_run' bit-blit).  Otherwise only the
+     rows Emacs chooses to redraw move at the true sub-line pixel offset
+     while the bit-blitted block jumps by whole lines, so the user sees
+     lines scrolling at different speeds, blank blocks, and only the
+     cursor's line gliding.  Forcing `no_scrolling_p' makes every visible
+     row redraw at its real pixel_y, so the whole window glides
+     uniformly.  Runs before the `scrolling_window' check in
+     `update_window' (dispnew.c), which calls this hook first.  */
+  if (w->vscroll != 0 && w->desired_matrix)
+    w->desired_matrix->no_scrolling_p = true;
+
   /* Find or allocate a json_window slot.  */
   struct json_window *jw = json_get_window (js, w->sequence_number);
   if (!jw)
@@ -511,6 +525,7 @@ web_update_window_begin (struct window *w)
   jw->ph = WINDOW_PIXEL_HEIGHT (w);
   jw->active = true;
   jw->is_menu_bar = WINDOW_MENU_BAR_P (w);
+  jw->is_minibuffer = MINI_WINDOW_P (w);
   web_capture_webview (jw, w);
   web_capture_tldraw (jw, w);
 
@@ -1274,6 +1289,8 @@ web_flush_display (struct frame *f)
 
 	      if (jw->is_menu_bar)
 		WR_LIT (dpyinfo, ",\"menu_bar\":true");
+	      if (jw->is_minibuffer)
+		WR_LIT (dpyinfo, ",\"mini\":true");
 
 	      /* Always emitted: an empty string clears a stale overlay
 		 when the window switches to a non-webview buffer.  */
@@ -1941,7 +1958,19 @@ web_dispatch_event (struct web_display_info *dpyinfo, struct web_event *event,
 	  ie.modifiers |= down_modifier;
 	else
 	  ie.modifiers |= up_modifier;
-	ie.arg = make_fixnum (abs (event->dy));
+	/* Carry the precise pixel delta so `pixel-scroll-precision-mode'
+	   engages: make_lispy_event puts a cons arg's (t . PIXELS) at
+	   (nth 4 event), which pixel-scroll-precision reads.  Without the
+	   cons it falls back to whole-line mwheel scrolling.  Browser
+	   deltaY>0 (toward buffer end) maps to a negative precision delta.
+	   (nth 3) keeps a coarse line count for the mwheel fallback.  */
+	{
+	  int ch = FRAME_LINE_HEIGHT (f);
+	  int lines = ch > 0 ? (abs (event->dy) + ch - 1) / ch : 1;
+	  if (lines < 1) lines = 1;
+	  ie.arg = list3 (make_fixnum (lines), Qt,
+			  make_fixnum (-event->dy));
+	}
 	kbd_buffer_store_event (&ie);
 	return 1;
       }
@@ -2254,7 +2283,14 @@ web_read_socket (struct terminal *terminal,
 	  else
 	    ie.modifiers |= up_modifier;
 
-	  ie.arg = make_fixnum (abs (dy));
+	  /* See the async path above: a cons arg yields (nth 4 event) =
+	     (t . PIXELS), which pixel-scroll-precision-mode consumes.  */
+	  {
+	    int ch = f ? FRAME_LINE_HEIGHT (f) : dpyinfo->default_char_height;
+	    int lines = ch > 0 ? (abs (dy) + ch - 1) / ch : 1;
+	    if (lines < 1) lines = 1;
+	    ie.arg = list3 (make_fixnum (lines), Qt, make_fixnum (-dy));
+	  }
 	  kbd_buffer_store_event (&ie);
 	  count++;
 	}
