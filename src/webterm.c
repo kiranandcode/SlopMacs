@@ -1123,7 +1123,8 @@ web_flush_display (struct frame *f)
       char bg[8];
       color_to_hex (js->clear_bg, bg);
       web_write_printf (dpyinfo,
-			"{\"type\":\"clear_frame\",\"bg\":\"%s\"}\n", bg);
+			"{\"type\":\"clear_frame\",\"frame\":%d,\"bg\":\"%s\"}\n",
+			FRAME_X_OUTPUT (f)->id, bg);
 
       /* Reset image-sent tracking so reused image IDs are re-sent.
 	 The image cache can reuse slots after GC, so stale data
@@ -1177,6 +1178,23 @@ web_flush_display (struct frame *f)
 	web_write_printf (dpyinfo,
 			  "{\"type\":\"frame_update\",\"ts\":%llu",
 			  (unsigned long long)_ms);
+      }
+
+      /* Frame identity + child-frame geometry.  The browser composites
+	 each frame as its own positioned layer; a child frame floats at
+	 (left_pos,top_pos) pixels inside its parent.  Always emitted so a
+	 frame-aware client can route windows to the right surface; older
+	 clients ignore the unknown fields.  */
+      web_write_printf (dpyinfo, ",\"frame\":%d", FRAME_X_OUTPUT (f)->id);
+      {
+	struct frame *parent = FRAME_PARENT_FRAME (f);
+	if (parent && FRAME_WEB_P (parent))
+	  web_write_printf (dpyinfo,
+			    ",\"parent\":%d,\"fx\":%d,\"fy\":%d,"
+			    "\"fw\":%d,\"fh\":%d",
+			    FRAME_X_OUTPUT (parent)->id,
+			    f->left_pos, f->top_pos,
+			    FRAME_PIXEL_WIDTH (f), FRAME_PIXEL_HEIGHT (f));
       }
 
       /* 3a. Faces dictionary.  */
@@ -1752,6 +1770,17 @@ web_update_end (struct frame *f)
    Input event reading — proxy_fd → Emacs input events (NDJSON).
    ==================================================================== */
 
+/* Allocate a stable, process-unique frame id for the multi-frame wire
+   protocol.  Id 0 is never handed out so the client can treat it as
+   "unset"; the initial frame gets the first id.  */
+static int web_frame_id_counter = 0;
+
+int
+web_alloc_frame_id (void)
+{
+  return ++web_frame_id_counter;
+}
+
 /* Return the first frame on this display, or NULL.  */
 static struct frame *
 web_any_frame (struct web_display_info *dpyinfo)
@@ -1853,6 +1882,25 @@ json_type_is (const char *json, int json_len, const char *type_value)
   if (len < 0)
     return false;
   return strcmp (buf, type_value) == 0;
+}
+
+/* Bound on `web-tldraw--pending'.  If nothing is draining it (no board
+   buffer is live, so the elisp drain timer is not running, or the
+   drainer is wedged), inbound tldraw messages would otherwise pile up
+   without limit.  Past the cap we drop new messages instead.  The
+   counter is approximate (reset whenever the queue is drained by
+   `web-tldraw--take-pending'); it only needs to bound growth.  */
+#define WEB_TLDRAW_PENDING_CAP 1024
+static int web_tldraw_pending_count = 0;
+
+static void
+web_tldraw_enqueue (const char *s, ptrdiff_t len)
+{
+  if (web_tldraw_pending_count >= WEB_TLDRAW_PENDING_CAP)
+    return;  /* drop: no live drainer */
+  Vweb_tldraw__pending
+    = Fcons (make_string_from_utf8 (s, len), Vweb_tldraw__pending);
+  web_tldraw_pending_count++;
 }
 
 #ifdef HAVE_PTHREAD
@@ -2089,10 +2137,7 @@ web_dispatch_event (struct web_display_info *dpyinfo, struct web_event *event,
 	 on the main thread here, so touching Lisp is safe; the payload is
 	 freed by web_event_recycle after this returns.  */
       if (event->payload)
-	Vweb_tldraw__pending
-	  = Fcons (make_string_from_utf8 (event->payload,
-					  strlen (event->payload)),
-		   Vweb_tldraw__pending);
+	web_tldraw_enqueue (event->payload, strlen (event->payload));
       return 0;
     }
 
@@ -2437,9 +2482,7 @@ web_read_socket (struct terminal *terminal,
 	  int tlen = json_extract_string (line, line_len, "type",
 					  tbuf, sizeof tbuf);
 	  if (tlen >= 7 && memcmp (tbuf, "tldraw_", 7) == 0)
-	    Vweb_tldraw__pending
-	      = Fcons (make_string_from_utf8 (line, line_len),
-		       Vweb_tldraw__pending);
+	    web_tldraw_enqueue (line, line_len);
 	}
     }
 
@@ -2905,9 +2948,22 @@ web_set_window_size (struct frame *f, bool change_gravity,
   color_to_hex (def ? def->background : FRAME_BACKGROUND_COLOR (f), bg_hex);
 
   web_write_printf (dpyinfo,
-		    "{\"type\":\"frame_size\",\"cols\":%d,\"rows\":%d,"
-		    "\"default_face\":{\"fg\":\"%s\",\"bg\":\"%s\"}}\n",
+		    "{\"type\":\"frame_size\",\"frame\":%d,"
+		    "\"cols\":%d,\"rows\":%d,"
+		    "\"default_face\":{\"fg\":\"%s\",\"bg\":\"%s\"}",
+		    FRAME_X_OUTPUT (f)->id,
 		    FRAME_COLS (f), FRAME_LINES (f), fg_hex, bg_hex);
+  {
+    struct frame *parent = FRAME_PARENT_FRAME (f);
+    if (parent && FRAME_WEB_P (parent))
+      web_write_printf (dpyinfo,
+			",\"parent\":%d,\"fx\":%d,\"fy\":%d,"
+			"\"fw\":%d,\"fh\":%d",
+			FRAME_X_OUTPUT (parent)->id,
+			f->left_pos, f->top_pos,
+			FRAME_PIXEL_WIDTH (f), FRAME_PIXEL_HEIGHT (f));
+  }
+  WR_LIT (dpyinfo, "}\n");
   web_control_flush (dpyinfo);
 }
 
@@ -3763,6 +3819,7 @@ internal queue; this drains it.  Called by a timer in web-tldraw.el.  */)
 {
   Lisp_Object pending = Vweb_tldraw__pending;
   Vweb_tldraw__pending = Qnil;
+  web_tldraw_pending_count = 0;
   return Fnreverse (pending);
 }
 

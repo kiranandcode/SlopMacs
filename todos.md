@@ -65,10 +65,16 @@ things I want to fix:
 - [ ] `make_multibyte_string` abort crashes (2x on 2026-06-12 13:47, see
       ~/Library/Logs/DiagnosticReports) — eval_sub → make_multibyte_string
       with bad length; likely a preemptive-threads string race.  Unfixed.
-- [ ] Proxy footgun: a second Emacs connecting to `--emacs-port` silently
-      displaces the live one (no handshake/refusal).  A stray test instance
-      inheriting EMACS_WEB_EMACS_PORT killed the live display today.
-      Proxy should refuse or require an explicit takeover flag.
+- [x] Proxy footgun FIXED (2026-06-18): the proxy now REFUSES a second
+      Emacs attaching over `--emacs-port` while one is connected (closes
+      the newcomer; logs "Refusing second Emacs attach") instead of
+      displacing the live one.  Reconnect after the live one disconnects
+      (hot reload, emacs_fd==-1) still works.  Both kqueue+epoll accept
+      paths (web-display/main.c).  Takes effect on next proxy launch.
+      Recurrence today was a stray `emacs -Q --web --load /tmp/childframe2.el`
+      that inherited EMACS_WEB_EMACS_PORT, hijacked the display (tldraw
+      spun) and pegged 98% CPU dying in a regexp; killed it.  Still launch
+      sandbox instances with `env -u EMACS_WEB_EMACS_PORT`.
 - [ ] Emacs aborts (eassert in wait_reading_process_output) when its forked
       proxy exits after the last ws client disconnects — should detach
       gracefully instead.
@@ -293,3 +299,29 @@ things I want to fix:
       RET on a frame folds/unfolds by hiding members via the
       getShapeVisibility hook (meta.slopHidden) + collapsing the frame
       (no delete/recreate, so identity/bindings survive).
+
+## Trail/ripple fixes (2026-06-18)
+- [x] Cursor trail kinked to the left margin when moving to a new line:
+      Emacs reports (newRow, col 0) for one frame_update before the real
+      column lands the next (each bumps cursorGen → renderCursor runs
+      twice → trail records a col-0 point).  Fix in fx.js `cursorTrail`:
+      if the last point just arrived on a NEW line (its y ≠ the point
+      before it) and the incoming point is on that same line, REPLACE the
+      stub in place instead of appending.  Timing-independent.  Verified
+      behaviorally (3-point transient → 2 points, no x:0).
+- [x] Ripple (beacon) only on a real vertical jump, not when "moving
+      around code": gated on vertical line delta (|Δy|/charH > 1) instead
+      of euclidean distance (which also fired on long horizontal in-line
+      moves).
+- [x] "Ripples while typing + jumps to middle of screen" = a RECENTER
+      (typing past the window bottom → Emacs re-centers point to the
+      middle = full-window repaint, NOT a wheel scroll, so it slipped past
+      the lastScrollAt `scrolling` guard).  state.js now stamps each window
+      with `dirtyLines` (lines in that frame_update); renderCursor treats
+      `dirtyLines > max(6, h/2)` as a view shift → no trail, no beacon,
+      snap the caret.  (The recenter itself is Emacs scroll-conservatively
+      policy, not client-suppressible.)
+- [x] Workflow gotcha recorded: Electron loads the built dist/ bundle
+      (no Vite dev server), so renderer changes need `npm run build` THEN
+      `location.reload()` — a bare reload re-serves the stale bundle.
+      Verify new code behaviorally, not via fn.toString() (vite minifies).

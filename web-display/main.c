@@ -430,32 +430,40 @@ event_loop (void)
             }
           else if (emacs_listen_fd >= 0 && fd == emacs_listen_fd)
             {
-              /* Emacs (re)attaching over TCP.  Only one at a time;
-                 a new connection replaces the old.  */
+              /* Emacs (re)attaching over TCP.  Only one at a time.  If
+                 one is already attached, REFUSE the newcomer rather than
+                 letting it hijack the display — a stray second `--web'
+                 Emacs (or a sandbox instance that inherited
+                 EMACS_WEB_EMACS_PORT) used to silently displace the live
+                 session.  After the live Emacs disconnects (emacs_fd ==
+                 -1, e.g. a hot reload), the next connection is accepted
+                 normally.  */
               int newfd = accept (emacs_listen_fd, NULL, NULL);
               if (newfd >= 0)
                 {
-                  struct kevent ev;
                   if (emacs_fd >= 0)
                     {
-                      EV_SET (&ev, emacs_fd, EVFILT_READ, EV_DELETE,
-                              0, 0, NULL);
-                      kevent (kq, &ev, 1, NULL, 0, NULL);
-                      close (emacs_fd);
+                      fprintf (stderr, "Refusing second Emacs attach "
+                               "(one already connected)\n");
+                      close (newfd);
                     }
-                  emacs_fd = newfd;
-                  in_fd = newfd;
-                  emacs_buf_len = 0;
-                  fcntl (emacs_fd, F_SETFL,
-                         fcntl (emacs_fd, F_GETFL) | O_NONBLOCK);
-                  EV_SET (&ev, emacs_fd, EVFILT_READ,
-                          EV_ADD | EV_ENABLE, 0, 0, NULL);
-                  kevent (kq, &ev, 1, NULL, 0, NULL);
-                  fprintf (stderr, "Emacs attached\n");
-                  /* Ask the (possibly fresh) Emacs for a full frame so
-                     connected browser clients repaint immediately.  */
-                  replay_client_state ();
-                  request_redraw ();
+                  else
+                    {
+                      struct kevent ev;
+                      emacs_fd = newfd;
+                      in_fd = newfd;
+                      emacs_buf_len = 0;
+                      fcntl (emacs_fd, F_SETFL,
+                             fcntl (emacs_fd, F_GETFL) | O_NONBLOCK);
+                      EV_SET (&ev, emacs_fd, EVFILT_READ,
+                              EV_ADD | EV_ENABLE, 0, 0, NULL);
+                      kevent (kq, &ev, 1, NULL, 0, NULL);
+                      fprintf (stderr, "Emacs attached\n");
+                      /* Ask the (fresh) Emacs for a full frame so
+                         connected browser clients repaint immediately.  */
+                      replay_client_state ();
+                      request_redraw ();
+                    }
                 }
             }
           else if (fd == debug_listen_fd)
@@ -651,27 +659,33 @@ event_loop (void)
             }
           else if (emacs_listen_fd >= 0 && fd == emacs_listen_fd)
             {
-              /* Emacs (re)attaching over TCP.  */
+              /* Emacs (re)attaching over TCP.  Refuse a second Emacs
+                 while one is connected (no display hijack); accept once
+                 the live one has disconnected (e.g. a hot reload).  */
               int newfd = accept (emacs_listen_fd, NULL, NULL);
               if (newfd >= 0)
                 {
-                  struct epoll_event eev;
                   if (emacs_fd >= 0)
                     {
-                      epoll_ctl (epfd, EPOLL_CTL_DEL, emacs_fd, NULL);
-                      close (emacs_fd);
+                      fprintf (stderr, "Refusing second Emacs attach "
+                               "(one already connected)\n");
+                      close (newfd);
                     }
-                  emacs_fd = newfd;
-                  in_fd = newfd;
-                  emacs_buf_len = 0;
-                  fcntl (emacs_fd, F_SETFL,
-                         fcntl (emacs_fd, F_GETFL) | O_NONBLOCK);
-                  eev.events = EPOLLIN;
-                  eev.data.fd = emacs_fd;
-                  epoll_ctl (epfd, EPOLL_CTL_ADD, emacs_fd, &eev);
-                  fprintf (stderr, "Emacs attached\n");
-                  replay_client_state ();
-                  request_redraw ();
+                  else
+                    {
+                      struct epoll_event eev;
+                      emacs_fd = newfd;
+                      in_fd = newfd;
+                      emacs_buf_len = 0;
+                      fcntl (emacs_fd, F_SETFL,
+                             fcntl (emacs_fd, F_GETFL) | O_NONBLOCK);
+                      eev.events = EPOLLIN;
+                      eev.data.fd = emacs_fd;
+                      epoll_ctl (epfd, EPOLL_CTL_ADD, emacs_fd, &eev);
+                      fprintf (stderr, "Emacs attached\n");
+                      replay_client_state ();
+                      request_redraw ();
+                    }
                 }
             }
           else if (fd == debug_listen_fd)

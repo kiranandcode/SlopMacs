@@ -138,7 +138,13 @@ Pieces:
   on WebSocket open, which never recurs across an Emacs restart) and
   then requests a full redraw, so the fresh instance comes up at the
   window's real size instead of 80x25.  Result: zero client
-  disconnects across a reload.
+  disconnects across a reload.  Only one Emacs attaches at a time: while
+  one is connected the proxy **refuses** a second attach (closes it,
+  logs "Refusing second Emacs attach") rather than letting it hijack the
+  display — a stray `--web` Emacs that inherited `EMACS_WEB_EMACS_PORT`
+  used to silently displace the live session.  Reconnect after the live
+  one disconnects (emacs_fd == -1) is still accepted.  (Launch sandbox
+  instances with `env -u EMACS_WEB_EMACS_PORT` regardless.)
 - **slop-reload.sh** — rebuild + `emacsclient -s web-emacs -e
   '(session-reload)'`, falling back to marker + kill if wedged.
 

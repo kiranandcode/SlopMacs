@@ -1035,7 +1035,10 @@ the full design. Protocol additions to this backend:
   (heap-allocated payload — snapshots exceed the fixed event buffers),
   queued into `web-tldraw--pending`, and drained by an elisp timer
   (`web-tldraw--take-pending`). The `web_read_socket` branch is the
-  synchronous-build fallback.
+  synchronous-build fallback. The queue is capped
+  (`WEB_TLDRAW_PENDING_CAP`, webterm.c): if no board buffer is live the
+  drain timer is stopped, so without the cap inbound messages would pile
+  up unbounded — past the cap new ones are dropped.
 
 The board content itself lives in an Emacs buffer (a `.tldr` JSON
 snapshot), not in `frame_update`; an epoch counter prevents echo loops.
@@ -1117,6 +1120,31 @@ pulse, and a *flash* highlight. `FrameRenderer` owns it:
   large jump snaps the caret (`transition:none`) and fires a beacon instead
   of dragging it across the screen. Trail/beacon color = the themeable
   `--cursor-accent` CSS var, defaulting to the frame foreground.
+- **Trail col-0 stub (fx.js `cursorTrail`).** When the caret moves to a new
+  line Emacs reports `(newRow, col 0)` for one frame_update before the real
+  column lands the next — each bumps `cursorGen`, so `renderCursor` runs
+  twice and the trail used to kink out to the left margin and back. The
+  trail now swallows that stub: if the last point *just arrived on a new
+  line* (its `y` differs from the point before it) and the incoming point is
+  on that same line, it replaces the stub in place rather than appending.
+  Timing-independent (works whether the two frames are back-to-back or a
+  tick apart) and only ever touches the first within-line move after a line
+  change.
+- **Beacon "ripple" gating (`renderCursor` + state.js `dirtyLines`).** The
+  beacon fires only on a *vertical* line delta `> 1` line — gauged by
+  `|Δy|/charH`, **not** the euclidean distance, which used to ripple on long
+  *horizontal* moves within one line. It is additionally suppressed on a
+  **view shift / recenter** (typing past the window bottom makes Emacs
+  re-center point to the middle — a full-window repaint, *not* a wheel
+  scroll, so the `lastScrollAt` `scrolling` guard misses it). The view shift
+  is detected by per-window line churn: `state.js` stamps each window with
+  `dirtyLines` (count of lines in that frame_update); a recenter repaints
+  most of the window (`> max(6, h/2)`) whereas a cursor move repaints 1-2
+  lines. During a scroll or view shift the caret also snaps
+  (`transition:none`) so it doesn't glide to the middle and read as a jump.
+  (The recenter *itself* is Emacs scroll policy — `scroll-conservatively` —
+  not something the client can suppress; the FX layer just stops amplifying
+  it.)
 - Beacons (xref/imenu/next-error landings), isearch match flashes, and
   **smooth scroll-to-definition** are driven from Emacs by
   `lisp/web-fx.el`. It needs no new C primitive: it reuses the generic
